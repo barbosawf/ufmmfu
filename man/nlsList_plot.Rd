@@ -26,7 +26,8 @@ nlsList_plot(
 
 \item{grouping.var}{Variable that defines the data grouping. Example: \code{y ~ x | grouping.var}.}
 
-\item{fun}{Modified non-linear function with \code{.args} prefix (required for internal computation) and suffixes that refer to the parameters of the non-linear model used. Example: if the logistic model was used as \code{function(x, Asym, xmid, scal) {Asym / (1 + exp(-scal * (x - xmid)))}} in the \code{nlme::nlsList()} function, the argument \code{fun} will be \code{function(x, .args) {.args$Asym / (1 + exp(-.args$scal * (x - .args$xmid)))}}.}
+\item{fun}{Modified non-linear function with \code{.args} prefix (required for internal computation) and suffixes that refer to the parameters of the non-linear model used.
+Example: if the logistic model was used as \code{function(x, Asym, xmid, scal) {Asym / (1 + exp(-scal * (x - xmid)))}} in the \code{nlme::nlsList()} function, the argument \code{fun} will be \code{function(x, .args) {.args$Asym / (1 + exp(-.args$scal * (x - .args$xmid)))}}.}
 
 \item{nlsList.obj}{Object returned using the \code{nlme::nlsList()} function.}
 
