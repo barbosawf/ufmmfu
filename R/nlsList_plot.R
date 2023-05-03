@@ -41,7 +41,11 @@
 #'              color = 'blue',
 #'              linewidth = 0.5,
 #'              x.lab = x.lab,
-#'              y.lab = y.lab)
+#'              y.lab = y.lab) -> g
+#'
+#' g$list_p
+#'
+#' g$panel_p
 #'
 #' @export
 #'
