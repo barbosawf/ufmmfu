@@ -93,10 +93,10 @@ nlsList_plot <-
 
     arr.nlsList.obj |>
       stats::na.omit() |>
-      dplyr::nest_by({{g.var}}, .keep = T) -> nested_args
+      dplyr::nest_by(!!g.var, .keep = T) -> nested_args
 
 
-    args_list <- nested_args$data
+    args_list <- nested_args[[2]]
 
 
     args_list |>
