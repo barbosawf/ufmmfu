@@ -69,7 +69,7 @@ nlsList_plot <-
 
 
     # grouping.var is turned into symbol to be used in nest_by function
-    g.var <- sym(grouping.var)
+    g.var <- rlang::sym(grouping.var)
 
     ordem <- sort(levels(df[[grouping.var]]))
 
