@@ -44,7 +44,7 @@
 #' # Object from nlme function
 #' nlme.obj <- nlme::nlme(circumference ~ logistic(age, Asym, xmid, scal),
 #'                        fixed = Asym + xmid + scal ~ 1,
-#'                        random = pdDiag(Asym + xmid + scal ~ 1),
+#'                        random = nlme::pdDiag(Asym + xmid + scal ~ 1),
 #'                        start = c(192, 728, .002),
 #'                        data = df)
 #'
