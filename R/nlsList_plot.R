@@ -95,7 +95,7 @@ nlsList_plot <-
       stats::na.omit() |>
       droplevels() |>
       split(arr.nlsList.obj[[grouping.var]]) |>
-      purrr::map(as_tibble) -> args_list
+      purrr::map(tibble::as_tibble) -> args_list
 
     arr.nlsList.obj |>
       base::apply(1, anyNA) -> id_with_nas
