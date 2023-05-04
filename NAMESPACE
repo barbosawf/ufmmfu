@@ -2,3 +2,5 @@
 
 export(nlsList_plot)
 import(rlang)
+importFrom(stats,fitted)
+importFrom(stats,na.omit)
