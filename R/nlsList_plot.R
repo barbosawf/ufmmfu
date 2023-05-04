@@ -131,7 +131,7 @@ nlsList_plot <-
 
     df_list |>
       purrr::map(~.x |>
-                   dplyr::summarise_at(vars({{x.axis}}),
+                   dplyr::summarise_at(dplyr::vars({{x.axis}}),
                          list(min, max))) -> lms
 
     # x.axis and y.axis are turned into symbol to be used in geom_point function
