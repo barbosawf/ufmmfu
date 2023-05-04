@@ -165,7 +165,7 @@ nlsList_plot <-
       ggplot2::ggplot() +
         ggplot2::geom_point(ggplot2::aes(x = {{x.axis}}, y = {{y.axis}}), data = .df) +
         ggplot2::stat_function(
-          fun = \(x) fun(x, .args),
+          fun = \(x) {fun(x, .args)},
           color = color,
           xlim = c(.lms[[1]], .lms[[2]]),
           linewidth = linewidth
