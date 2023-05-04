@@ -100,7 +100,7 @@ nlsList_plot <-
 
 
     args_list |>
-      stats::setNames(nested_args[[grouping.var]]) -> args_list
+      stats::setNames(droplevels(nested_args[[grouping.var]])) -> args_list
 
 
     arr.nlsList.obj |>
@@ -131,8 +131,8 @@ nlsList_plot <-
 
     df_list |>
       purrr::map(~.x |>
-                   dplyr::summarise_at(dplyr::vars({{x.axis}}),
-                         list(min, max))) -> lms
+                   dplyr::summarise_at(dplyr::vars(dplyr::all_of(x.axis)),
+                                       list(min, max))) -> lms
 
     # x.axis and y.axis are turned into symbol to be used in geom_point function
     x.axis <- rlang::sym(x.axis)
