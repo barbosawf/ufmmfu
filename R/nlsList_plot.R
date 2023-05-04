@@ -93,15 +93,9 @@ nlsList_plot <-
 
     arr.nlsList.obj |>
       stats::na.omit() |>
-      dplyr::nest_by(!!g.var, .keep = T) -> nested_args
-
-
-    args_list <- nested_args[[2]]
-
-
-    args_list |>
-      stats::setNames(droplevels(nested_args[[grouping.var]])) -> args_list
-
+      droplevels() |>
+      split(arr.nlsList.obj[[grouping.var]]) |>
+      purrr::map(as_tibble) -> args_list
 
     arr.nlsList.obj |>
       base::apply(1, anyNA) -> id_with_nas
