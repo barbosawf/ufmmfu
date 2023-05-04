@@ -77,12 +77,14 @@ nlsList_plot <-
     ordem <- sort(levels(df[[grouping.var]]))
 
     df |>
+      as.data.frame() |>
       dplyr::mutate_at(dplyr::vars({{grouping.var}}),
                 ~ factor(., levels = ordem)) |>
       dplyr::arrange_at(grouping.var) -> df
 
 
     stats::coef(nlsList.obj) |>
+      as.data.frame() |>
       tibble::rownames_to_column(var = grouping.var) |>
       dplyr::mutate_at(dplyr::vars({{grouping.var}}),
                 ~ factor(., levels = ordem)) |>
