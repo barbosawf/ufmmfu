@@ -20,6 +20,8 @@
 #'
 #' @export
 #'
+#' @import rlang
+#'
 #' @examples
 #'
 #' df <- datasets::Orange
@@ -74,37 +76,37 @@ nlsList_plot <-
     ordem <- sort(levels(df[[grouping.var]]))
 
     df |>
-      mutate_at(vars({{grouping.var}}),
+      dplyr::mutate_at(dplyr::vars({{grouping.var}}),
                 ~ factor(., levels = ordem)) |>
-      arrange_at(grouping.var) -> df
+      dplyr::arrange_at(grouping.var) -> df
 
 
-    coef(nlsList.obj) |>
+    stats::coef(nlsList.obj) |>
       rownames_to_column(var = grouping.var) |>
-      mutate_at(vars({{grouping.var}}),
+      dplyr::mutate_at(dplyr::vars({{grouping.var}}),
                 ~ factor(., levels = ordem)) |>
-      arrange_at(grouping.var) -> arr.nlsList.obj
+      dplyr::arrange_at(grouping.var) -> arr.nlsList.obj
 
 
     arr.nlsList.obj |>
-      na.omit() |>
-      nest_by({{g.var}}, .keep = T) -> nested_args
+      stats::na.omit() |>
+      dplyr::nest_by({{g.var}}, .keep = T) -> nested_args
 
 
     args_list <- nested_args$data
 
 
     args_list |>
-      setNames(nested_args[[grouping.var]]) -> args_list
+      stats::setNames(nested_args[[grouping.var]]) -> args_list
 
 
     arr.nlsList.obj |>
-      apply(1, anyNA) -> id_with_nas
+      base::apply(1, anyNA) -> id_with_nas
 
     arr.nlsList.obj |>
       dplyr::select({{grouping.var}}) |> pull() -> gv
 
-    id_with_nas <- as.vector(droplevels(gv[id_with_nas]))
+    id_with_nas <- base::as.vector(base::droplevels(gv[id_with_nas]))
 
 
     x_min_max <- c(min = min(df[[x.axis]]), max = max(df[[x.axis]]))
@@ -115,23 +117,23 @@ nlsList_plot <-
 
 
     filtered_df <-
-      df |> filter_at(vars(all_of(grouping.var)), ~ !. %in% id_with_nas)
+      df |> dplyr::filter_at(dplyr::vars(dplyr::all_of(grouping.var)), ~ !. %in% id_with_nas)
 
 
     nested_df <- filtered_df |>
-      nest_by({{g.var}}, .keep = T)
+      dplyr::nest_by({{g.var}}, .keep = T)
 
     df_list <- nested_df$data |>
-      setNames(nested_df[[1]])
+      stats::setNames(nested_df[[1]])
 
     df_list |>
-      map(~.x |>
-            summarise_at(vars({{x.axis}}),
+      purrr::map(~.x |>
+                   dplyr::summarise_at(vars({{x.axis}}),
                          list(min, max))) -> lms
 
     # x.axis and y.axis are turned into symbol to be used in geom_point function
-    x.axis <- sym(x.axis)
-    y.axis <- sym(y.axis)
+    x.axis <- rlang::sym(x.axis)
+    y.axis <- rlang::sym(y.axis)
 
 
 
@@ -139,17 +141,17 @@ nlsList_plot <-
       if (is.null(x.lab)) {
         # A waiver is a "flag" object to indicate the calling function
         # should just use the default value.
-        xlab(waiver())
+        ggplot2::xlab(ggplot2::waiver())
       } else {
-        xlab(x.lab)
+        ggplot2::xlab(x.lab)
       }
     }
 
     f.y <- function(y.lab) {
       if (is.null(y.lab)) {
-        ylab(waiver())
+        ggplot2::ylab(ggplot2::waiver())
       } else {
-        ylab(y.lab)
+        ggplot2::ylab(y.lab)
       }
     }
 
@@ -162,21 +164,21 @@ nlsList_plot <-
     # lms is a list with the limits of the x-axis where the non-linear function is applied
 
 
-    pmap(list(df_list, args_list, lms), \(.df, .args, .lms) {
-      ggplot() +
-        geom_point(aes(x = {{x.axis}}, y = {{y.axis}}), data = .df) +
-        stat_function(
+    purrr::pmap(list(df_list, args_list, lms), \(.df, .args, .lms) {
+      ggplot2::ggplot() +
+        ggplot2::geom_point(ggplot2::aes(x = {{x.axis}}, y = {{y.axis}}), data = .df) +
+        ggplot2::stat_function(
           fun = \(x) fun(x, .args),
           color = color,
           xlim = c(.lms[[1]], .lms[[2]]),
           linewidth = linewidth
         ) +
-        scale_x_continuous(limits = x_min_max) +
-        scale_y_continuous(limits = y_min_max) +
-        labs(title = .args[[grouping.var]]) +
-        theme_minimal() +
-        theme(
-          plot.title = element_text(
+        ggplot2::scale_x_continuous(limits = x_min_max) +
+        ggplot2::scale_y_continuous(limits = y_min_max) +
+        ggplot2::labs(title = .args[[grouping.var]]) +
+        ggplot2::theme_minimal() +
+        ggplot2::theme(
+          plot.title = ggplot2::element_text(
             size = 10,
             hjust = 0.5,
             vjust = -0.5
@@ -188,19 +190,19 @@ nlsList_plot <-
     }) -> list_p
 
 
-    ggarrange(
+    ggpubr::ggarrange(
       plotlist = list_p |>
-        map( ~ . + rremove('xlab') +
-               rremove('ylab'))
+        purrr::map( ~ . + ggpubr::rremove('xlab') +
+               ggpubr::rremove('ylab'))
     ) |>
-      annotate_figure(
-        left = text_grob(
+      ggpubr::annotate_figure(
+        left = ggpubr::text_grob(
           ifelse(is.null(y.lab), y.axis, y.lab),
           rot = 90,
           vjust = 0.5,
           size = 14
         ),
-        bottom = text_grob(ifelse(is.null(x.lab), x.axis, x.lab),
+        bottom = ggpubr::text_grob(ifelse(is.null(x.lab), x.axis, x.lab),
                           size = 14)
       ) -> panel_p
 
