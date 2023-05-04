@@ -83,7 +83,7 @@ nlsList_plot <-
 
 
     stats::coef(nlsList.obj) |>
-      rownames_to_column(var = grouping.var) |>
+      tibble::rownames_to_column(var = grouping.var) |>
       dplyr::mutate_at(dplyr::vars({{grouping.var}}),
                 ~ factor(., levels = ordem)) |>
       dplyr::arrange_at(grouping.var) -> arr.nlsList.obj
@@ -105,7 +105,7 @@ nlsList_plot <-
       base::apply(1, anyNA) -> id_with_nas
 
     arr.nlsList.obj |>
-      dplyr::select({{grouping.var}}) |> pull() -> gv
+      dplyr::select({{grouping.var}}) |> dplyr::pull() -> gv
 
     id_with_nas <- base::as.vector(base::droplevels(gv[id_with_nas]))
 
