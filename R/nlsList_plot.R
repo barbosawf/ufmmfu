@@ -21,6 +21,7 @@
 #' @export
 #'
 #' @import rlang
+#' @importFrom stats fitted na.omit
 #'
 #' @examples
 #'
