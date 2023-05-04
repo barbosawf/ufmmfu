@@ -29,7 +29,7 @@
 #'
 #' logistic <- function(x, Asym, xmid, scal){Asym / (1 + exp(- scal * (x - xmid)))}
 #'
-#' nlsList.obj <- nls(circumference ~ logistic(age, Asym, xmid, scal),
+#' nlsList.obj <- nlme::nlsList(circumference ~ logistic(age, Asym, xmid, scal),
 #' start = list(Asym = 170, xmid = 600, scal = .004),
 #' data = df)
 #'
