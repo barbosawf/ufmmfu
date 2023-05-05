@@ -31,22 +31,13 @@
 #'
 #' # Logistic function
 #' logistic <- function(x, Asym, xmid, scal){
-#'     Asym / (1 + exp(- scal * (x - xmid)))
-#' }
+#'     Asym / (1 + exp(- scal * (x - xmid)))}
 #'
 #'
 #' # Object from nlsList function
 #' nlsList.obj <- nlme::nlsList(circumference ~ logistic(age, Asym, xmid, scal),
 #'                              start = list(Asym = 170, xmid = 600, scal = .004),
 #'                              data = df)
-#'
-#'
-#' # Object from nlme function
-#' nlme.obj <- nlme::nlme(circumference ~ logistic(age, Asym, xmid, scal),
-#'                        fixed = Asym + xmid + scal ~ 1,
-#'                        random = nlme::pdDiag(Asym + xmid + scal ~ 1),
-#'                        start = c(192, 728, .002),
-#'                        data = df)
 #'
 #'
 #' # Arguments for nlme_plot function
@@ -69,29 +60,9 @@
 #'           linewidth = 0.5,
 #'           x.lab = x.lab,
 #'           y.lab = y.lab) -> nlsList_p
-#'\dontrun{
-#' nlsList_p$list_p
-#'}
 #'
 #' nlsList_p$panel_p
 #'
-#'
-#' # Graphics for nlme object
-#' nlme_plot(df = df,
-#'           x.axis = x.axis,
-#'           y.axis = y.axis,
-#'           grouping.var = grouping.var,
-#'           fun = fun,
-#'           nlme.obj = nlme.obj,
-#'           color = 'blue',
-#'           linewidth = 0.5,
-#'           x.lab = x.lab,
-#'           y.lab = y.lab) -> nlme_p
-#'\dontrun{
-#' nlme_p$list_p
-#'}
-#'
-#' nlme_p$panel_p
 #'
 nlme_plot <-
   function(df,
