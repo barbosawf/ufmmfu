@@ -25,7 +25,7 @@ library(dplyr)
 set.seed(123)
 mtcars |>
     select_at(vars(disp:qsec)) |>
-    add_column(mtcars |>
+    tibble::add_column(mtcars |>
         select_at(vars(disp:qsec)) |>
         mutate_all(~. + rnorm(1, sd = 1))) |>
     cor() -> corr

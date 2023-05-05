@@ -7,8 +7,7 @@
 #'
 #' @return A data frame with columns 'Var1', 'Var2', and 'Correlation' containing pairs of redundant variables and their correlation coefficients.
 #'
-#' @importFrom dplyr arrange
-#' @import magrittr
+#' @importFrom dplyr arrange desc
 #'
 #' @export
 #'
@@ -20,7 +19,7 @@
 #' set.seed(123)
 #' mtcars |>
 #'     select_at(vars(disp:qsec)) |>
-#'     add_column(mtcars |>
+#'     tibble::add_column(mtcars |>
 #'         select_at(vars(disp:qsec)) |>
 #'         mutate_all(~. + rnorm(1, sd = 1))) |>
 #'     cor() -> corr
@@ -34,16 +33,16 @@ redundancy <- function(x, inf_limit = 1) {
   x_upper_tri <- upper.tri(x, diag = TRUE)
   x[x_upper_tri] <- NA
 
-  x_lower_tri_NA <- x %>%
-    as.table() %>%
-    as.data.frame() %>%
-    na.omit() %>%
+  x_lower_tri_NA <- x |>
+    as.table() |>
+    as.data.frame() |>
+    na.omit() |>
     setNames(c('Var1', 'Var2', 'Correlation'))
 
   founded_lines <- which(abs(x_lower_tri_NA[, 3]) >= inf_limit)
 
   if (length(founded_lines) > 0) {
-    out <- x_lower_tri_NA[founded_lines,] %>%
+    out <- x_lower_tri_NA[founded_lines,] |>
       arrange(desc(abs(Correlation)))
   } else {
     out <- NULL
