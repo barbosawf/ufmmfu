@@ -21,8 +21,9 @@
 #' @export
 #'
 #' @import rlang
-#' @importFrom stats fitted na.omit
 #'
+#' @importFrom stats fitted na.omit
+#' @importFrom nlme nlsList nlme
 #' @examples
 #'
 #' # Data frame: Orange
