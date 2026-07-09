@@ -7,7 +7,7 @@
 git_set_ssh_account(account_name, project_name, owner = NULL)
 }
 \arguments{
-\item{account_name}{Character. The name of the routing profile alias (e.g., 'barbosawf', 'epamigsafra').}
+\item{account_name}{Character. The name of the routing profile alias (e.g., 'tyrosine', 'phenylalanine').}
 
 \item{project_name}{Character. The name of the specific GitHub repository.}
 
