@@ -89,7 +89,7 @@ git_push_with_local_id <- function(branch = NULL) {
 #' Re-maps the remote 'origin' URL of the current repository to match a defined
 #' SSH alias matching your configuration profiles.
 #'
-#' @param account_name Character. The name of the routing profile alias (e.g., 'barbosawf', 'epamigsafra').
+#' @param account_name Character. The name of the routing profile alias (e.g., 'tyrosine', 'phenylalanine').
 #' @param project_name Character. The name of the specific GitHub repository.
 #' @param owner Character. The GitHub organization or user account that owns the repo. If NULL, defaults to the account_name.
 #' @return Invisibly returns the system execution result code.
