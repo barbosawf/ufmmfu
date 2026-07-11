@@ -13,5 +13,5 @@ git_push_with_local_id(branch = NULL)
 Invisibly returns the system execution result code.
 }
 \description{
-Executes a standardized 'git push -u' command to track and sync with the remote repository.
+Push Local Changes Safely via Active SSH Routing
 }

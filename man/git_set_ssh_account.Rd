@@ -17,6 +17,5 @@ git_set_ssh_account(account_name, project_name, owner = NULL)
 Invisibly returns the system execution result code.
 }
 \description{
-Re-maps the remote 'origin' URL of the current repository to match a defined
-SSH alias matching your configuration profiles.
+Configure Local Repository Remote to Use a Specific SSH Profile
 }

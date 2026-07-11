@@ -13,5 +13,5 @@ git_pull_with_local_id(branch = NULL)
 Invisibly returns the system execution result code.
 }
 \description{
-Executes a standardized 'git pull' command on the active tracking branch.
+Pull Remote Changes Safely via Active SSH Routing
 }

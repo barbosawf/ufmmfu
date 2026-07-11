@@ -10,6 +10,5 @@ git_status_check()
 Invisibly returns the remote origin URL string.
 }
 \description{
-This function inspects the current repository's remote origin URL to detect
-if it is configured via HTTPS or SSH and hints if multi-account conflicts exist.
+Check Git Remote Status and Identify Account Routing
 }
