@@ -37,11 +37,6 @@ setup_rgee_python_env <- function(venv_name = "rgee",
                                                         "ipykernel")) {
   is_windows <- .Platform$OS.type == "windows"
 
-  # ---------------------------------------------------------------
-  # Resolve an OS-appropriate default for path_env if the user didn't
-  # provide one explicitly. This is what was hardcoded before and broke
-  # on Linux.
-  # ---------------------------------------------------------------
   if (is.null(path_env)) {
     path_env <- if (is_windows)
       "C:/venvs"
@@ -79,21 +74,52 @@ setup_rgee_python_env <- function(venv_name = "rgee",
             path_env,
             "'. Creating...")
 
-    if (is_windows) {
-      available_pythons <- tryCatch(
-        reticulate::py_versions_windows(),
+    # ---------------------------------------------------------------
+    # Explicitly resolve (or install) a Python interpreter to use as the
+    # base for the new virtualenv. This works identically on Windows and
+    # Linux/macOS, via reticulate's uv-backed Python management -- it
+    # replaces the old Windows-only py_versions_windows()/install_python()
+    # block, which left Linux relying on virtualenv_create()'s automatic
+    # resolution. That automatic resolution can fail silently on Linux,
+    # passing a NULL/invalid python path downstream.
+    # ---------------------------------------------------------------
+    python_starter <- tryCatch(
+      reticulate::virtualenv_starter(version = py_version),
+      error = function(e)
+        NULL
+    )
+
+    if (is.null(python_starter) ||
+        length(python_starter) == 0 || anyNA(python_starter)) {
+      message(
+        "No suitable Python ",
+        py_version,
+        " found. Installing via reticulate::install_python()..."
+      )
+      reticulate::install_python(version = py_version)
+      python_starter <- tryCatch(
+        reticulate::virtualenv_starter(version = py_version),
         error = function(e)
           NULL
       )
-      if (length(available_pythons$version) == 0) {
-        message("Installing isolated Python ",
-                py_version,
-                " via pyenv-win...")
-        reticulate::install_python(version = py_version, force = FALSE)
-      }
     }
 
-    reticulate::virtualenv_create(venv_name, version = py_version)
+    if (is.null(python_starter) ||
+        length(python_starter) == 0 || anyNA(python_starter)) {
+      stop(
+        "Could not locate or install a Python ",
+        py_version,
+        " interpreter to create the '",
+        venv_name,
+        "' virtual environment."
+      )
+    }
+
+    # If more than one candidate is returned, use the first one
+    python_starter <- python_starter[1]
+    message("Using Python interpreter: ", python_starter)
+
+    reticulate::virtualenv_create(venv_name, python = python_starter)
     reticulate::virtualenv_install(envname = venv_name, packages = required_packages)
 
     message(
