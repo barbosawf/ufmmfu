@@ -6,7 +6,7 @@
 \usage{
 setup_rgee_python_env(
   venv_name = "rgee",
-  path_env = "C:/venvs",
+  path_env = NULL,
   py_version = "3.11",
   required_packages = c("numpy", "pandas", "matplotlib", "scipy", "earthengine-api",
     "ipykernel")
@@ -15,9 +15,10 @@ setup_rgee_python_env(
 \arguments{
 \item{venv_name}{Character. Name of the virtual environment. Default \code{"rgee"}.}
 
-\item{path_env}{Character. Folder where the virtual environment will be
-created/looked up. Should be OUTSIDE any cloud-synced folder (e.g. OneDrive).
-Default \code{"C:/venvs"}.}
+\item{path_env}{Character or \code{NULL}. Folder where the virtual environment
+will be created/looked up. Should be OUTSIDE any cloud-synced folder
+(e.g. OneDrive). If \code{NULL} (default), an OS-appropriate default is used:
+\code{"C:/venvs"} on Windows, or \code{"~/.venvs"} on Linux/macOS.}
 
 \item{py_version}{Character. Python version to use. Default \code{"3.11"}.}
 

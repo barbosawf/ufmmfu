@@ -8,7 +8,7 @@ run_rgee_setup(
   ee_user,
   ee_project,
   venv_name = "rgee",
-  path_env = "C:/venvs",
+  path_env = NULL,
   py_version = "3.11",
   required_packages = c("numpy", "pandas", "matplotlib", "scipy", "earthengine-api",
     "ipykernel"),
