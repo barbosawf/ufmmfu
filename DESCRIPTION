@@ -18,7 +18,13 @@ Imports:
     tibble,
     nlme,
     reticulate,
-    rgee
+    rgee,
+    forcats,
+    sf,
+    stringr,
+    terra,
+    tidyr,
+    tidyselect
 Suggests:
     rstudioapi
 Depends: 

@@ -93,7 +93,7 @@
 #'   is used as the final local output scale instead of \code{target_scale_m}.
 #'   Download from Earth Engine always happens at the native resolution
 #'   regardless of this argument; this only affects local resampling.
-#' @param valid_values_threshold Numeric in [0, 1]. Minimum proportion of
+#' @param valid_values_threshold Numeric in \code{[0, 1]}. Minimum proportion of
 #'   non-NA cells required per plot/phase for that combination to be flagged
 #'   \code{Valid = TRUE} in the returned \code{Validation} table.
 #' @param download_route Passed to \code{rgee::ee_as_rast()}, e.g.
@@ -1051,8 +1051,8 @@ get_temporal_vi_data <-
             Data |>
             dplyr::group_by(Region, Plot, Year, Phase, start_date, end_date) |>
             dplyr::summarise(
-              NA_count = sum(is.na(across(where(is.numeric) & -c("x", "y")))),
-              total_cells = n() * length(names(pick(where(is.numeric) & -c("x", "y")))),
+              NA_count = sum(is.na(dplyr::across(dplyr::where(is.numeric) & -c("x", "y")))),
+              total_cells = n() * length(names(dplyr::pick(dplyr::where(is.numeric) & -c("x", "y")))),
               valid_ratio = (total_cells - NA_count) / total_cells,
               Valid = valid_ratio >= valid_values_threshold,
               .groups = "drop"
@@ -1074,8 +1074,8 @@ get_temporal_vi_data <-
             Data |>
             dplyr::group_by(Region, Plot) |>
             dplyr::summarise(
-              NA_count = sum(is.na(across(where(is.numeric) & -c("x", "y")))),
-              total_cells = n() * length(names(pick(where(is.numeric) & -c("x", "y")))),
+              NA_count = sum(is.na(dplyr::across(dplyr::where(is.numeric) & -c("x", "y")))),
+              total_cells = n() * length(names(dplyr::pick(dplyr::where(is.numeric) & -c("x", "y")))),
               valid_ratio = (total_cells - NA_count) / total_cells,
               Valid = valid_ratio >= valid_values_threshold,
               .groups = "drop"
@@ -1093,8 +1093,8 @@ get_temporal_vi_data <-
           Data <- Data |>
             dplyr::group_by(Region, Plot, Year, Phase, start_date, end_date) |>
             dplyr::summarise(
-              across(
-                .cols = where(is.numeric) & -c(x, y),
+              dplyr::across(
+                .cols = dplyr::where(is.numeric) & -c(x, y),
                 .fns = list(
                   mean = ~ mean(., na.rm = TRUE),
                   median = ~ median(., na.rm = TRUE),
@@ -1114,8 +1114,8 @@ get_temporal_vi_data <-
           Data <- Data |>
             dplyr::group_by(Region, Plot) |>
             dplyr::summarise(
-              across(
-                .cols = where(is.numeric) & -c(x, y),
+              dplyr::across(
+                .cols = dplyr::where(is.numeric) & -c(x, y),
                 .fns = list(
                   mean = ~ mean(., na.rm = TRUE),
                   median = ~ median(., na.rm = TRUE),
