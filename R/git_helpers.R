@@ -128,12 +128,21 @@ git_setup_ssh_config <- function(accounts, bind_global = TRUE) {
     dir.create(ssh_dir, recursive = TRUE, showWarnings = FALSE)
   }
 
+  known_hosts_file <- file.path(ssh_dir, "known_hosts")
+
   lines <- c(
     "# Multi-Account GitHub Routing Configurations",
     sprintf(
       "# Generated automatically by ufmmfu::git_setup_ssh_config() on %s",
       Sys.time()
     ),
+    "",
+    "# Force known_hosts to live in the physical .ssh directory. Without this,",
+    "# ssh resolves known_hosts from the process's $HOME, which on some Windows",
+    "# machines is redirected into OneDrive and can fail with 'Permission denied'",
+    "# when ssh tries to update it (OneDrive locks/syncs the file).",
+    "Host *",
+    sprintf("    UserKnownHostsFile %s", known_hosts_file),
     ""
   )
 
@@ -152,6 +161,14 @@ git_setup_ssh_config <- function(accounts, bind_global = TRUE) {
 
   writeLines(lines, con = config_file, sep = "\n")
   message(sprintf("[SUCCESS] SSH config written to physical path: %s", config_file))
+
+  if (!file.exists(known_hosts_file)) {
+    file.create(known_hosts_file)
+    message(sprintf(
+      "[SUCCESS] Created empty known_hosts file at: %s",
+      known_hosts_file
+    ))
+  }
 
   missing_keys <- character(0)
   for (alias in names(accounts)) {
@@ -381,18 +398,23 @@ git_set_ssh_account <- function(account_name, project_name, owner = NULL) {
 #' }
 #'
 #' @export
-git_pull_force_remote <- function(branch = NULL, confirm = TRUE, stash_backup = TRUE) {
+git_pull_force_remote <- function(branch = NULL,
+                                  confirm = TRUE,
+                                  stash_backup = TRUE) {
   if (is.null(branch)) {
     branch <- tryCatch(
       system("git rev-parse --abbrev-ref HEAD", intern = TRUE),
-      error = function(e) stop("Could not detect active branch.")
+      error = function(e)
+        stop("Could not detect active branch.")
     )
   }
 
-  message(sprintf(
-    "- WARNING: This will discard ALL uncommitted local changes on branch '%s'.",
-    branch
-  ))
+  message(
+    sprintf(
+      "- WARNING: This will discard ALL uncommitted local changes on branch '%s'.",
+      branch
+    )
+  )
   message(sprintf(
     "- Local changes will be replaced with the content of origin/%s.",
     branch
@@ -412,8 +434,10 @@ git_pull_force_remote <- function(branch = NULL, confirm = TRUE, stash_backup = 
   }
 
   message("- Verifying upstream tracking branch configuration...")
-  system(sprintf("git branch --set-upstream-to=origin/%s %s", branch, branch),
-         ignore.stderr = TRUE)
+  system(
+    sprintf("git branch --set-upstream-to=origin/%s %s", branch, branch),
+    ignore.stderr = TRUE
+  )
 
   message(sprintf("- Fetching latest data from 'origin/%s'...", branch))
   fetch_result <- system("git fetch origin")
@@ -427,11 +451,14 @@ git_pull_force_remote <- function(branch = NULL, confirm = TRUE, stash_backup = 
   if (stash_backup) {
     status_output <- tryCatch(
       system("git status --porcelain", intern = TRUE),
-      error = function(e) character(0)
+      error = function(e)
+        character(0)
     )
     if (length(status_output) > 0) {
       timestamp <- format(Sys.time(), "%Y-%m-%d %H:%M:%S")
-      stash_message <- sprintf("Backup before force reset on branch '%s' (%s)", branch, timestamp)
+      stash_message <- sprintf("Backup before force reset on branch '%s' (%s)",
+                               branch,
+                               timestamp)
       message("- Uncommitted changes detected. Creating stash backup...")
       stash_result <- system(sprintf("git stash push -u -m %s", shQuote(stash_message)))
       if (stash_result == 0) {
@@ -444,7 +471,10 @@ git_pull_force_remote <- function(branch = NULL, confirm = TRUE, stash_backup = 
     }
   }
 
-  message(sprintf("- Resetting local branch to match 'origin/%s' (hard reset)...", branch))
+  message(sprintf(
+    "- Resetting local branch to match 'origin/%s' (hard reset)...",
+    branch
+  ))
   reset_result <- system(sprintf("git reset --hard origin/%s", branch))
   if (reset_result == 0) {
     message("[SUCCESS] Local files now match origin exactly.")

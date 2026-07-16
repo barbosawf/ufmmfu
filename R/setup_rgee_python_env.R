@@ -67,22 +67,17 @@ setup_rgee_python_env <-
                                  "ipykernel"),
            pip_cert = NULL,
            pip_trusted_host = NULL) {
-
     is_windows <- .Platform$OS.type == "windows"
 
     # ---------------------------------------------------------------
-<<<<<<< HEAD
     # Resolve (and, if provided explicitly, persist) pip SSL configuration.
     # Must happen before any reticulate call that may shell out to pip
     # (virtualenv_create()'s internal pip/wheel/setuptools bootstrap,
     # virtualenv_install(), etc.).
     # ---------------------------------------------------------------
-    .resolve_and_apply_pip_ssl_config(pip_cert = pip_cert,
-                                      pip_trusted_host = pip_trusted_host)
+    .resolve_and_apply_pip_ssl_config(pip_cert = pip_cert, pip_trusted_host = pip_trusted_host)
 
     # ---------------------------------------------------------------
-=======
->>>>>>> 6628c92fd13e7901bceca1c9702b94f5a789a6c1
     # Resolve an OS-appropriate default for path_env if the user didn't
     # provide one explicitly.
     # ---------------------------------------------------------------
@@ -222,7 +217,8 @@ setup_rgee_python_env <-
     # (THIS REPLACES the old call to rgee::ee_install_set_pyenv())
     # ---------------------------------------------------------------
     current_env_py <- Sys.getenv("EARTHENGINE_PYTHON")
-    if (current_env_py == "" || current_env_py != venv_python_path) {
+    if (current_env_py == "" ||
+        current_env_py != venv_python_path) {
       .set_earthengine_pyenv_quiet(py_path = venv_python_path, py_env = venv_name)
     }
 
@@ -271,7 +267,6 @@ setup_rgee_python_env <-
 
   invisible(NULL)
 }
-<<<<<<< HEAD
 
 
 #' Resolve and apply pip SSL configuration (cert bundle or trusted hosts)
@@ -298,7 +293,6 @@ setup_rgee_python_env <-
 #' @noRd
 .resolve_and_apply_pip_ssl_config <- function(pip_cert = NULL,
                                               pip_trusted_host = NULL) {
-
   renviron_path <- path.expand("~/.Renviron")
 
   # -----------------------------------------------------------------
@@ -341,10 +335,9 @@ setup_rgee_python_env <-
     pip_cert <- path.expand(pip_cert)
 
     if (!file.exists(pip_cert)) {
-      warning(
-        "pip_cert points to a file that does not exist: ", pip_cert,
-        ". Ignoring it."
-      )
+      warning("pip_cert points to a file that does not exist: ",
+              pip_cert,
+              ". Ignoring it.")
       pip_cert <- NULL
     } else {
       Sys.setenv(
@@ -391,20 +384,19 @@ setup_rgee_python_env <-
         sprintf('REQUESTS_CA_BUNDLE="%s"', pip_cert)
       )
     } else if (!is.null(pip_trusted_host)) {
-      lines <- c(
-        lines,
-        sprintf('PIP_TRUSTED_HOST="%s"', paste(pip_trusted_host, collapse = " "))
-      )
+      lines <- c(lines, sprintf(
+        'PIP_TRUSTED_HOST="%s"',
+        paste(pip_trusted_host, collapse = " ")
+      ))
     }
 
     writeLines(lines, renviron_path)
     message(
-      "Saved pip SSL configuration to ", renviron_path,
+      "Saved pip SSL configuration to ",
+      renviron_path,
       " (will be applied automatically in future sessions)."
     )
   }
 
   invisible(NULL)
 }
-=======
->>>>>>> 6628c92fd13e7901bceca1c9702b94f5a789a6c1

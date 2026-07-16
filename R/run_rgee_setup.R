@@ -74,7 +74,6 @@ run_rgee_setup <-
            interactive_restart = TRUE,
            pip_cert = NULL,
            pip_trusted_host = NULL) {
-
     # ---------------------------------------------------------------
     # STEP 1: Set up (or reuse) the Python virtual environment.
     # If it was just created, setup_rgee_python_env() returns NULL and
