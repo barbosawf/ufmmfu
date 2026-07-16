@@ -25,6 +25,16 @@
 #'   not installed, or the IDE doesn't support this, the function falls back
 #'   to asking the user to restart manually. Set to `FALSE` to always require
 #'   a manual restart.
+#' @param pip_cert Character or `NULL`. Path to a CA certificate bundle that
+#'   `pip` should trust. See [setup_rgee_python_env()] for details -- this
+#'   is a passthrough. Useful on networks with SSL inspection (corporate
+#'   proxies/firewalls) that otherwise cause `CERTIFICATE_VERIFY_FAILED`
+#'   errors when installing the Python packages required by rgee. Once
+#'   passed explicitly, it's remembered in `~/.Renviron` and reused
+#'   automatically in later calls.
+#' @param pip_trusted_host Character vector, `TRUE`, or `NULL`. Host(s) for
+#'   which `pip` should skip SSL verification entirely. See
+#'   [setup_rgee_python_env()]. Prefer `pip_cert` when available.
 #'
 #' @details
 #' If the Python virtual environment does not exist yet, this function will
@@ -53,7 +63,7 @@ run_rgee_setup <-
   function(ee_user,
            ee_project,
            venv_name = "rgee",
-           path_env = "C:/venvs",
+           path_env = NULL,
            py_version = "3.11",
            required_packages = c("numpy",
                                  "pandas",
@@ -61,7 +71,9 @@ run_rgee_setup <-
                                  "scipy",
                                  "earthengine-api",
                                  "ipykernel"),
-           interactive_restart = TRUE) {
+           interactive_restart = TRUE,
+           pip_cert = NULL,
+           pip_trusted_host = NULL) {
 
     # ---------------------------------------------------------------
     # STEP 1: Set up (or reuse) the Python virtual environment.
@@ -72,7 +84,9 @@ run_rgee_setup <-
       venv_name = venv_name,
       path_env = path_env,
       py_version = py_version,
-      required_packages = required_packages
+      required_packages = required_packages,
+      pip_cert = pip_cert,
+      pip_trusted_host = pip_trusted_host
     )
 
     if (is.null(venv_python_path)) {
@@ -83,7 +97,9 @@ run_rgee_setup <-
           venv_name = venv_name,
           path_env = path_env,
           py_version = py_version,
-          required_packages = required_packages
+          required_packages = required_packages,
+          pip_cert = pip_cert,
+          pip_trusted_host = pip_trusted_host
         )
 
         if (!restarted) {
@@ -142,7 +158,9 @@ run_rgee_setup <-
                                          venv_name,
                                          path_env,
                                          py_version,
-                                         required_packages) {
+                                         required_packages,
+                                         pip_cert = NULL,
+                                         pip_trusted_host = NULL) {
   if (!requireNamespace("rstudioapi", quietly = TRUE)) {
     return(FALSE)
   }
@@ -167,13 +185,15 @@ run_rgee_setup <-
 
   # Build the command to run automatically right after the session restarts.
   resume_call <- sprintf(
-    "ufmmfu::run_rgee_setup(ee_user = %s, ee_project = %s, venv_name = %s, path_env = %s, py_version = %s, required_packages = %s, interactive_restart = TRUE)",
+    "ufmmfu::run_rgee_setup(ee_user = %s, ee_project = %s, venv_name = %s, path_env = %s, py_version = %s, required_packages = %s, interactive_restart = TRUE, pip_cert = %s, pip_trusted_host = %s)",
     deparse(ee_user),
     deparse(ee_project),
     deparse(venv_name),
     deparse(path_env),
     deparse(py_version),
-    deparse(required_packages)
+    deparse(required_packages),
+    paste(deparse(pip_cert), collapse = " "),
+    paste(deparse(pip_trusted_host), collapse = " ")
   )
 
   message("\n>>> Restarting R session automatically to bind the new Python environment... <<<\n")
