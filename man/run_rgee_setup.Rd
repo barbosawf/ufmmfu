@@ -8,11 +8,13 @@ run_rgee_setup(
   ee_user,
   ee_project,
   venv_name = "rgee",
-  path_env = "C:/venvs",
+  path_env = NULL,
   py_version = "3.11",
   required_packages = c("numpy", "pandas", "matplotlib", "scipy", "earthengine-api",
     "ipykernel"),
-  interactive_restart = TRUE
+  interactive_restart = TRUE,
+  pip_cert = NULL,
+  pip_trusted_host = NULL
 )
 }
 \arguments{
@@ -42,6 +44,18 @@ with the same arguments right after the restart. If \pkg{rstudioapi} is
 not installed, or the IDE doesn't support this, the function falls back
 to asking the user to restart manually. Set to \code{FALSE} to always require
 a manual restart.}
+
+\item{pip_cert}{Character or \code{NULL}. Path to a CA certificate bundle that
+\code{pip} should trust. See \code{\link[=setup_rgee_python_env]{setup_rgee_python_env()}} for details -- this
+is a passthrough. Useful on networks with SSL inspection (corporate
+proxies/firewalls) that otherwise cause \code{CERTIFICATE_VERIFY_FAILED}
+errors when installing the Python packages required by rgee. Once
+passed explicitly, it's remembered in \verb{~/.Renviron} and reused
+automatically in later calls.}
+
+\item{pip_trusted_host}{Character vector, \code{TRUE}, or \code{NULL}. Host(s) for
+which \code{pip} should skip SSL verification entirely. See
+\code{\link[=setup_rgee_python_env]{setup_rgee_python_env()}}. Prefer \code{pip_cert} when available.}
 }
 \value{
 Invisibly, a list with:

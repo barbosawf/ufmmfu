@@ -6,22 +6,43 @@
 \usage{
 setup_rgee_python_env(
   venv_name = "rgee",
-  path_env = "C:/venvs",
+  path_env = NULL,
   py_version = "3.11",
   required_packages = c("numpy", "pandas", "matplotlib", "scipy", "earthengine-api",
-    "ipykernel")
+    "ipykernel"),
+  pip_cert = NULL,
+  pip_trusted_host = NULL
 )
 }
 \arguments{
 \item{venv_name}{Character. Name of the virtual environment. Default \code{"rgee"}.}
 
-\item{path_env}{Character. Folder where the virtual environment will be
-created/looked up. Should be OUTSIDE any cloud-synced folder (e.g. OneDrive).
-Default \code{"C:/venvs"}.}
+\item{path_env}{Character or \code{NULL}. Folder where the virtual environment
+will be created/looked up. Should be OUTSIDE any cloud-synced folder
+(e.g. OneDrive). If \code{NULL} (default), an OS-appropriate default is used:
+\code{"C:/venvs"} on Windows, or \code{"~/.venvs"} on Linux/macOS.}
 
 \item{py_version}{Character. Python version to use. Default \code{"3.11"}.}
 
 \item{required_packages}{Character vector of Python packages to install.}
+
+\item{pip_cert}{Character or \code{NULL}. Path to a CA certificate bundle
+(\code{.pem}/\code{.crt}) that \code{pip} should trust when downloading packages.
+Useful on corporate networks that perform SSL inspection (self-signed
+certificate injected in the chain), which otherwise causes
+\code{CERTIFICATE_VERIFY_FAILED} errors. If \code{NULL} (default), the function
+looks for a previously saved value in \code{PIP_CERT} (session env var or
+\verb{~/.Renviron}). If provided explicitly, the value is saved to
+\verb{~/.Renviron} so future calls don't need to repeat it.}
+
+\item{pip_trusted_host}{Character vector, \code{TRUE}, or \code{NULL}. Host(s) for
+which \code{pip} should skip SSL certificate verification entirely (e.g.
+\code{"pypi.org"}, \code{"files.pythonhosted.org"}). Use this only when
+\code{pip_cert} is not available/practical -- it disables certificate
+verification for those hosts, which is less secure. Pass \code{TRUE} to use
+the default hosts \code{c("pypi.org", "files.pythonhosted.org")}. Like
+\code{pip_cert}, an explicit value is persisted to \verb{~/.Renviron}. Ignored if
+\code{pip_cert} resolves to a non-\code{NULL} value.}
 }
 \value{
 Invisibly, the path to the virtual environment's Python executable.
@@ -37,9 +58,22 @@ installs the required packages, then stops and asks the user to restart
 the R session before calling the function again. This avoids a known
 reticulate/uv conflict where creating a virtualenv and binding to it in
 the same session causes an initialization error.
+
+On networks that perform SSL/TLS inspection (common on some corporate
+networks), \code{pip} may fail with \code{CERTIFICATE_VERIFY_FAILED} errors when
+downloading packages from PyPI. Use \code{pip_cert} (preferred) or
+\code{pip_trusted_host} to work around this. Once set explicitly, the choice
+is remembered in \verb{~/.Renviron} and applied automatically on subsequent
+calls -- even from \code{run_rgee_setup()} -- without passing the argument
+again.
 }
 \examples{
 \dontrun{
 venv_rgee_path <- setup_rgee_python_env()
+
+# On a network with SSL inspection (e.g. corporate firewall):
+venv_rgee_path <- setup_rgee_python_env(
+  pip_cert = "C:/certs/empresa-ca-bundle.pem"
+)
 }
 }
