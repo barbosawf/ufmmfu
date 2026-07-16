@@ -5,7 +5,10 @@ export(check_ssh_setup)
 export(comb_map)
 export(cor_intervals)
 export(get_ee_credential_paths)
+<<<<<<< HEAD
 export(get_ssh_home)
+=======
+>>>>>>> 6628c92fd13e7901bceca1c9702b94f5a789a6c1
 export(git_pull_force_remote)
 export(git_pull_with_local_id)
 export(git_push_with_local_id)

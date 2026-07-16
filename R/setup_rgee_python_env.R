@@ -71,6 +71,7 @@ setup_rgee_python_env <-
     is_windows <- .Platform$OS.type == "windows"
 
     # ---------------------------------------------------------------
+<<<<<<< HEAD
     # Resolve (and, if provided explicitly, persist) pip SSL configuration.
     # Must happen before any reticulate call that may shell out to pip
     # (virtualenv_create()'s internal pip/wheel/setuptools bootstrap,
@@ -80,6 +81,8 @@ setup_rgee_python_env <-
                                       pip_trusted_host = pip_trusted_host)
 
     # ---------------------------------------------------------------
+=======
+>>>>>>> 6628c92fd13e7901bceca1c9702b94f5a789a6c1
     # Resolve an OS-appropriate default for path_env if the user didn't
     # provide one explicitly.
     # ---------------------------------------------------------------
@@ -268,6 +271,7 @@ setup_rgee_python_env <-
 
   invisible(NULL)
 }
+<<<<<<< HEAD
 
 
 #' Resolve and apply pip SSL configuration (cert bundle or trusted hosts)
@@ -402,3 +406,5 @@ setup_rgee_python_env <-
 
   invisible(NULL)
 }
+=======
+>>>>>>> 6628c92fd13e7901bceca1c9702b94f5a789a6c1
