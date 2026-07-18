@@ -7,7 +7,9 @@
 git_set_ssh_account(account_name, project_name, owner = NULL)
 }
 \arguments{
-\item{account_name}{Character. The name of the routing profile alias (e.g., 'tyrosine', 'phenylalanine').}
+\item{account_name}{Character. The name of the routing profile alias, matching a
+\verb{Host github.com-<account_name>} entry in \verb{~/.ssh/config} (e.g., created via
+\code{\link[=git_setup_ssh_config]{git_setup_ssh_config()}}). Example aliases: \code{"work"}, \code{"personal"}.}
 
 \item{project_name}{Character. The name of the specific GitHub repository.}
 
@@ -18,4 +20,10 @@ Invisibly returns the system execution result code.
 }
 \description{
 Configure Local Repository Remote to Use a Specific SSH Profile
+}
+\examples{
+\dontrun{
+# Point the current repo's origin at the "work" SSH profile
+git_set_ssh_account("work", project_name = "my-repo", owner = "my-org")
+}
 }

@@ -11,11 +11,22 @@ Character. A normalized path (forward slashes) to the user's
 real, physical home directory.
 }
 \description{
-On Windows, R's \code{~} (via \code{normalizePath("~")}) may resolve to a
-OneDrive-redirected "Documents" folder instead of the physical user
-profile directory (\verb{C:/Users/<user>}), which is what Git Bash / OpenSSH
-actually use as \verb{$HOME}. This mismatch causes SSH to look for keys and
-the \code{config} file in the wrong place, producing errors such as
-"no such identity" even though the keys exist on disk. This function
-always returns the physical, non-redirected home directory.
+Cloud-sync clients can redirect a user's home or profile folder away from
+the physical location that Git Bash / OpenSSH actually use as \verb{$HOME},
+which causes SSH to look for keys and the \code{config} file in the wrong
+place (errors such as "no such identity" even though the keys exist on
+disk). This is most common on \strong{Windows}, where OneDrive (and, less
+frequently, Google Drive for desktop) can redirect the "Documents"
+folder or, in some managed/corporate setups, the user profile itself.
+}
+\details{
+On \strong{macOS} and \strong{Linux}, \verb{$HOME} itself is essentially never
+redirected by cloud-sync tools: iCloud Drive's "Desktop & Documents
+Sync" only moves \verb{~/Desktop} and \verb{~/Documents}, and Google
+Drive/Dropbox/OneDrive on these platforms sync a dedicated subfolder
+rather than replacing \verb{$HOME}. This function still resolves \verb{$HOME}
+explicitly on every platform (rather than relying on R's \code{~}, which can
+behave inconsistently across locales and setups) and pairs with
+\code{\link[=check_cloud_sync_conflicts]{check_cloud_sync_conflicts()}} to flag the rarer cases where \verb{~/.ssh}
+itself ends up inside a synced folder.
 }

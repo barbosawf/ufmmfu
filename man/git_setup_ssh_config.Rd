@@ -8,7 +8,7 @@ git_setup_ssh_config(accounts, bind_global = TRUE)
 }
 \arguments{
 \item{accounts}{A named character vector mapping account alias to email,
-e.g. \code{c(barbosawf = "wagner.barbosa@ufv.br", epamigsafra = "epamigsafra01@outlook.com")}.}
+e.g. \code{c(work = "you@work-email.com", personal = "you@personal-email.com")}.}
 
 \item{bind_global}{Logical. If \code{TRUE} (default), also sets
 \code{git config --global core.sshCommand} to point at this config file.}
@@ -29,4 +29,10 @@ Existing private keys are not generated or moved by this function; it
 only writes routing configuration. Use your platform's \code{ssh-keygen}
 (or an equivalent helper) to create keys directly inside the directory
 printed by this function if they don't already exist there.
+}
+\examples{
+\dontrun{
+git_setup_ssh_config(c(work = "you@work-email.com",
+                       personal = "you@personal-email.com"))
+}
 }

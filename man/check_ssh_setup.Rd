@@ -4,12 +4,17 @@
 \alias{check_ssh_setup}
 \title{Diagnose SSH Home Resolution and Configuration Status}
 \usage{
-check_ssh_setup(key_names = c("id_rsa_barbosawf", "id_rsa_epamigsafra"))
+check_ssh_setup(key_names = NULL)
 }
 \arguments{
-\item{key_names}{Character vector. Base names (without extension) of
-private keys to look for inside the physical \code{.ssh} directory.
-Defaults to \code{c("id_rsa_barbosawf", "id_rsa_epamigsafra")}.}
+\item{key_names}{Character vector or \code{NULL}. Base names (without
+extension) of private keys to look for inside the physical
+\code{.ssh} directory, e.g. \code{c("id_rsa_work", "id_rsa_personal")}.
+When \code{NULL} (default), every file in \code{.ssh} that looks like
+a private key (\code{id_rsa_*}, \code{id_ed25519_*}, or
+\code{id_ecdsa_*}, with no \code{.pub} extension) is auto-discovered
+and reported instead, so this function works out of the box for any
+user regardless of the account aliases they have set up.}
 }
 \value{
 Invisibly returns a list with \code{r_home}, \code{physical_home},
@@ -18,7 +23,19 @@ Invisibly returns a list with \code{r_home}, \code{physical_home},
 \description{
 Compares R's default \code{~} resolution against the physical home directory
 returned by \code{\link{get_ssh_home}}, warning if they diverge (a sign
-of OneDrive folder redirection on Windows). Also reports whether an SSH
-\code{config} file and known key files are present in the physical
-\code{.ssh} directory.
+of profile-folder redirection, most often seen on Windows). Also reports
+whether an SSH \code{config} file is present, and lists which private
+key files exist in the physical \code{.ssh} directory. Additionally runs
+\code{\link{check_cloud_sync_conflicts}} against the \code{.ssh}
+directory to flag OneDrive, Google Drive, iCloud Drive, Dropbox, or Box
+sync folders that could interfere with key files.
+}
+\examples{
+\dontrun{
+# Auto-discover whatever keys are present
+check_ssh_setup()
+
+# Check specifically for named account keys
+check_ssh_setup(key_names = c("id_rsa_work", "id_rsa_personal"))
+}
 }

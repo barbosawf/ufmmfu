@@ -24,7 +24,11 @@ get_temporal_vi_data(
   interpolate_bands = FALSE,
   max_pixels = 1e+12,
   clean_drive = TRUE,
-  min_output_cells = 5
+  min_output_cells = 5,
+  mask = NULL,
+  save_raster = FALSE,
+  raster_output_path = NULL,
+  batch_size = NULL
 )
 }
 \arguments{
@@ -105,6 +109,36 @@ cells are filled with a 3x3 focal mean.}
 cells required across the smallest dimension of each region, used to
 automatically refine \code{target_scale_m}/native scale locally when the
 region is too small for the requested scale.}
+
+\item{mask}{Optional \code{ee$Image} used to mask out pixels before
+download. Build it however you like outside the function -- e.g. chain
+\code{$neq()}/\code{$And()} conditions on a land-cover collection such
+as MapBiomas to exclude classes you are not interested in (water,
+urban, forest, etc.), or derive it from any other Earth Engine
+collection you have access to. It is clipped to each region's download
+extent internally and applied via \code{updateMask()}, so a single
+mask is automatically adapted to every region in \code{shapefiles}. If
+\code{NULL} (default), no mask is applied.}
+
+\item{save_raster}{Logical, default \code{FALSE}. If \code{TRUE}, the
+final processed raster for each region -- the same object returned in
+\code{$Raster}, i.e. the version right before it is turned into a
+data.frame -- is written to disk as a GeoTIFF.}
+
+\item{raster_output_path}{Optional character path to a folder where
+rasters are saved when \code{save_raster = TRUE}. If \code{NULL}
+(default), a \code{"raster_outputs"} folder is created inside the
+current working directory. Each file is named with the region and a
+timestamp so repeated runs, or multiple regions in the same run, never
+overwrite each other.}
+
+\item{batch_size}{Optional integer. Only relevant when
+\code{summarize_raster = FALSE} (individual images are downloaded
+rather than a single temporally-reduced image per phase). When a
+phase's image count exceeds \code{batch_size}, images are grouped into
+smaller Earth Engine download requests instead of one large combined
+request, and the results are stitched back together locally. See
+Details ("Memory usage with many images").}
 }
 \value{
 A named list, one entry per region in \code{shapefiles}, each
@@ -185,4 +219,95 @@ download extent, so that \code{clip()} does not mask away an entire
 native pixel and return an all-NA raster. This safety adjustment never
 changes the buffer value the user supplied for anything other than
 building the download extent.
+
+\strong{Memory usage with many images}
+
+When \code{summarize_raster = FALSE}, every individual image in a phase
+contributes its own set of bands to the combined download image (via
+\code{toBands()}), so both the Earth Engine request and the raster that
+comes back into R grow with images x bands. Over a long period with many
+images, this can exhaust memory or cause Earth Engine request failures.
+\code{batch_size} addresses this directly: instead of asking Earth
+Engine for one single combined image per phase, images are grouped into
+smaller batches, each downloaded separately and then stitched back
+together locally with \code{terra}. This keeps each individual Earth
+Engine request small. The function also calls \code{gc()} between
+batches and at the end of each region to release memory as soon as
+possible. If memory problems persist even with batching, consider
+shortening \code{phases_df} intervals (fewer images per phase), lowering
+\code{max_pixels}, or processing regions in smaller groups across
+separate calls to the function.
+}
+\examples{
+\dontrun{
+  # rgee must already be initialized in this session with your own
+  # Google Earth Engine credentials and Cloud project, e.g.:
+  # rgee::ee_Initialize(project = "your-gee-project-id")
+
+  # -- 1. Build a mask to exclude land-cover classes you're not
+  #       interested in (here: urban, water, forest, savanna, forest
+  #       plantation, restinga), using MapBiomas collection 9 --
+  mapbiomas <-
+    rgee::ee$Image(
+      paste0(
+        "projects/mapbiomas-public/assets/brazil/lulc/collection9/",
+        "mapbiomas_collection90_integration_v1"
+      )
+    )$select("classification_2023")
+
+  classes_to_exclude <- c(24, 33, 3, 4, 9, 62)
+
+  exclusion_mask <-
+    Reduce(
+      function(m, class_id) m$And(mapbiomas$neq(class_id)),
+      classes_to_exclude[-1],
+      mapbiomas$neq(classes_to_exclude[1])
+    )
+
+  # -- 2. A small Sentinel-2 SR collection, filtered to one growing
+  #       season, so there's more than one image per phase (useful to
+  #       also exercise batch_size below) --
+  s2_ic <-
+    rgee::ee$ImageCollection("COPERNICUS/S2_SR_HARMONIZED")$
+    filterDate("2023-10-01", "2024-03-31")$
+    filter(rgee::ee$Filter$lt("CLOUDY_PIXEL_PERCENTAGE", 20))
+
+  # -- 3. Vegetation indices and phenological phases --
+  vis_df <- data.frame(
+    Index = c("NDVI", "GNDVI"),
+    Equation = c("(NIR - R) / (NIR + R)", "(NIR - G) / (NIR + G)")
+  )
+
+  phases_df <- data.frame(
+    Year = 2023,
+    Phase = c("Vegetative", "Flowering"),
+    start_date = c("2023-10-01", "2023-12-01"),
+    end_date = c("2023-11-30", "2024-01-31")
+  )
+
+  # `shapefiles` is a named list of sf polygons, one per region/farm,
+  # each with an "id" column identifying individual plots.
+  # shapefiles <- list(FarmA = sf_farm_a, FarmB = sf_farm_b)
+
+  result <-
+    get_temporal_vi_data(
+      shapefiles       = shapefiles,
+      asset_bands_ic   = s2_ic,
+      vis_df           = vis_df,
+      phases_df        = phases_df,
+      summarize_raster = FALSE,   # per-image indices -> needed for batch_size
+      mask             = exclusion_mask,
+      save_raster      = TRUE,
+      raster_output_path = "rasters/s2_2023_2024",
+      batch_size       = 5        # download 5 images per EE request at a time
+    )
+
+  # Per-plot/per-phase summary statistics
+  result$FarmA$Data
+
+  # Rasters were also written to rasters/s2_2023_2024/, one GeoTIFF per
+  # region, named e.g. "raster_FarmA_20260718_223045_0417.tif"
+  list.files("rasters/s2_2023_2024")
+}
+
 }
