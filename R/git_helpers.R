@@ -122,8 +122,18 @@ check_cloud_sync_conflicts <- function(path) {
 #' Compares R's default `~` resolution against the physical home directory
 #' returned by \code{\link{get_ssh_home}}, warning if they diverge (a sign
 #' of profile-folder redirection, most often seen on Windows). Also reports
-#' whether an SSH \code{config} file is present, and lists which private
-#' key files exist in the physical \code{.ssh} directory. Additionally runs
+#' whether an SSH \code{config} file is present, lists which private
+#' key files exist in the physical \code{.ssh} directory, and -- crucially
+#' -- verifies that Git's global \code{core.sshCommand} setting (if bound
+#' via \code{\link{git_setup_ssh_config}}) actually points at that same
+#' physical config file. This last check matters because
+#' \code{core.sshCommand} is a plain string written once, at bind time; if
+#' it was bound while running under a different user profile (for example,
+#' an elevated "Run as Administrator" session, where Windows can resolve
+#' \code{USERPROFILE} to a different account), it will keep pointing at the
+#' wrong path indefinitely, causing errors like "Can't open user config
+#' file ...: No such file or directory" even though the physical
+#' \code{.ssh/config} and keys are perfectly correct. Additionally runs
 #' \code{\link{check_cloud_sync_conflicts}} against the \code{.ssh}
 #' directory to flag OneDrive, Google Drive, iCloud Drive, Dropbox, or Box
 #' sync folders that could interfere with key files.
@@ -137,7 +147,11 @@ check_cloud_sync_conflicts <- function(path) {
 #'   and reported instead, so this function works out of the box for any
 #'   user regardless of the account aliases they have set up.
 #' @return Invisibly returns a list with \code{r_home}, \code{physical_home},
-#'   \code{ssh_dir}, \code{config_exists}, and \code{keys_found}.
+#'   \code{ssh_dir}, \code{config_exists}, \code{keys_found},
+#'   \code{ssh_command_value} (the raw \code{core.sshCommand} string, or
+#'   \code{NA} if unset), and \code{ssh_command_ok} (\code{TRUE} if it
+#'   points at the expected physical config file, \code{FALSE} if it points
+#'   elsewhere or is unset, \code{NA} if it could not be parsed).
 #' @export
 #'
 #' @examples
@@ -181,6 +195,72 @@ check_ssh_setup <- function(key_names = NULL) {
   } else {
     "NOT found" }, config_file))
 
+  # Verify that Git's *global* core.sshCommand (if any) actually points at
+  # this machine's physical config file. This is checked independently of
+  # config_exists above because the two can silently disagree: the physical
+  # file can be perfectly correct while core.sshCommand -- a static string
+  # written once by git_setup_ssh_config() -- still points somewhere else
+  # (typically a stale path from a previous, differently-privileged
+  # session). Native `git` calls always follow core.sshCommand, not the
+  # physical file discovered above, so a mismatch here is the direct cause
+  # of "Can't open user config file" / "no such identity" errors even when
+  # everything else looks fine.
+  git_ssh_command <- tryCatch(
+    system2("git", c("config", "--global", "--get", "core.sshCommand"),
+            stdout = TRUE, stderr = FALSE),
+    error = function(e) character(0)
+  )
+  git_ssh_command <- git_ssh_command[nzchar(git_ssh_command)]
+
+  ssh_command_value <- NA_character_
+  ssh_command_ok     <- NA
+
+  if (length(git_ssh_command) == 0) {
+    message("- Git global 'core.sshCommand' is NOT set. Native 'git' calls (outside R) will fall back to the default SSH config, which may not include your multi-account routing.")
+    ssh_command_ok <- FALSE
+  } else {
+    ssh_command_value <- git_ssh_command[1]
+    path_match <- regmatches(
+      ssh_command_value,
+      regexpr('-F\\s+"?([^"]+?)"?\\s*$', ssh_command_value, perl = TRUE)
+    )
+    extracted_path <- if (length(path_match) > 0 && nzchar(path_match)) {
+      trimws(gsub('^-F\\s+"?|"?\\s*$', "", path_match))
+    } else {
+      NA_character_
+    }
+    normalize <- function(x) tolower(gsub("\\\\", "/", x))
+
+    if (is.na(extracted_path)) {
+      message(sprintf(
+        "- Git global 'core.sshCommand' is set but could not be parsed: %s",
+        ssh_command_value
+      ))
+    } else if (identical(normalize(extracted_path), normalize(config_file))) {
+      message("[OK] Git global 'core.sshCommand' points at this machine's physical SSH config file.")
+      ssh_command_ok <- TRUE
+    } else {
+      warning(sprintf(
+        paste(
+          "Git's global 'core.sshCommand' points at a DIFFERENT config file",
+          "than the physical one just verified above:\n",
+          "  - core.sshCommand points to:     %s\n",
+          "  - expected physical config file: %s\n",
+          "This mismatch is a common cause of 'no such identity' or",
+          "'Can't open user config file' errors even when the physical",
+          ".ssh/config and keys are correct. It typically happens when",
+          "core.sshCommand was bound while running under a different user",
+          "profile (e.g. an elevated 'Run as Administrator' session, where",
+          "Windows can resolve USERPROFILE to a different account). Fix it",
+          "by re-running git_setup_ssh_config() from a normal, non-elevated",
+          "session on this machine."
+        ),
+        extracted_path, config_file
+      ), call. = FALSE)
+      ssh_command_ok <- FALSE
+    }
+  }
+
   if (is.null(key_names)) {
     all_files  <- if (dir.exists(ssh_dir)) list.files(ssh_dir) else character(0)
     key_names  <- all_files[grepl("^id_(rsa|ed25519|ecdsa)_", all_files) & !grepl("\\.pub$", all_files)]
@@ -208,7 +288,9 @@ check_ssh_setup <- function(key_names = NULL) {
       physical_home = physical_home,
       ssh_dir = ssh_dir,
       config_exists = config_exists,
-      keys_found = keys_found
+      keys_found = keys_found,
+      ssh_command_value = ssh_command_value,
+      ssh_command_ok = ssh_command_ok
     )
   )
 }
@@ -625,9 +707,238 @@ git_pull_force_remote <- function(branch = NULL,
   invisible(reset_result)
 }
 
-#' List SSH host aliases configured in ~/.ssh/config
+#' Force remote branch to match local (force push)
 #'
-#' Parses the user's SSH config file and returns every `Host` entry defined
+#' @description
+#' Overwrites the remote branch's history with the local branch's history,
+#' discarding any remote commits that are not present locally. This is the
+#' mirror-image counterpart to \code{\link{git_pull_force_remote}}: that
+#' function makes your **local** copy match the **remote**; this function
+#' makes the **remote** match your **local** copy.
+#'
+#' @details
+#' Because this rewrites history that other people (or your other machines)
+#' may have already fetched, it is considerably riskier than
+#' \code{\link{git_pull_force_remote}} and should be used deliberately --
+#' typically after rebasing, amending commits, or intentionally discarding
+#' remote-only commits that you know are safe to lose.
+#'
+#' \strong{Important caveat about \code{--force-with-lease}:} this function
+#' always runs \code{git fetch origin} first (so its reference point is
+#' current and the backup tag is accurate). A side effect is that
+#' \code{--force-with-lease} alone -- which only checks whether the remote
+#' has moved since your \emph{local tracking ref} was last updated -- would
+#' pass even when the remote holds commits you have never seen, simply
+#' because the fetch you just ran caught you up right before the check. In
+#' other words, lease protection alone guards against races between this
+#' function's own fetch and its push, not against commits that were already
+#' waiting on the remote when you called it.
+#'
+#' To close that gap, this function performs its own explicit divergence
+#' check after fetching: it looks for any commits reachable from
+#' \code{origin/<branch>} that are not reachable from your local
+#' \code{<branch>}. If any are found, it lists them and requires a second,
+#' explicit confirmation (typing \code{DISCARD}) before proceeding --
+#' regardless of the \code{confirm} or \code{use_lease} settings. This is
+#' the real safety net; \code{--force-with-lease} is kept as a
+#' belt-and-braces measure against last-second concurrent pushes.
+#'
+#' The function performs the following steps:
+#' \enumerate{
+#'   \item Detects the current branch (if not supplied).
+#'   \item Runs \code{git fetch origin} to get an up-to-date view of the
+#'     remote.
+#'   \item Compares local and remote history. If the remote has commits
+#'     absent locally, lists them and requires typing \code{DISCARD} to
+#'     continue (this cannot be bypassed by \code{confirm = FALSE}, since
+#'     silently discarding unseen remote commits is exactly the failure
+#'     mode this check exists to prevent).
+#'   \item If \code{backup_tag = TRUE}, creates a local tag pointing at the
+#'     remote's current commit before overwriting it, so the discarded
+#'     remote history remains reachable locally.
+#'   \item Runs \code{git push} (with \code{--force-with-lease} or
+#'     \code{--force}, per \code{use_lease}) to overwrite the remote branch.
+#' }
+#'
+#' If a step fails due to SSH authentication issues (e.g. "Permission denied
+#' (publickey)" or "no such identity"), run \code{\link{check_ssh_setup}} to
+#' diagnose whether the local physical home directory diverges from what R's
+#' \code{~} resolves to.
+#'
+#' @param branch Character. Name of the branch to force-push. If \code{NULL}
+#'   (default), the current active branch is detected automatically via
+#'   \code{git rev-parse --abbrev-ref HEAD}.
+#' @param confirm Logical. If \code{TRUE} (default), prompts an interactive
+#'   confirmation before rewriting remote history when there is no
+#'   divergent remote history to worry about. This can be skipped with
+#'   \code{FALSE} for non-interactive use, but note that the separate
+#'   \code{DISCARD} confirmation described above still applies whenever
+#'   divergent remote commits are detected, regardless of this setting.
+#' @param use_lease Logical. If \code{TRUE} (default), pushes with
+#'   \code{--force-with-lease} instead of plain \code{--force}, as an
+#'   additional guard against a push happening on the remote in the instant
+#'   between this function's own fetch and its push. See Details for why
+#'   this is not, by itself, sufficient protection against already-diverged
+#'   history (that is handled separately).
+#' @param backup_tag Logical. If \code{TRUE} (default), creates a local tag
+#'   named \code{backup/<branch>-<timestamp>} pointing at the remote's
+#'   current commit before it is overwritten, so the discarded history stays
+#'   locally reachable (e.g. \code{git checkout backup/main-2026-07-18-...}).
+#'   This tag is created locally only; it is not pushed to the remote.
+#'
+#' @return Invisibly returns the integer exit status of the \code{git push}
+#'   command (\code{0} on success), or \code{FALSE} if the operation was
+#'   cancelled by the user.
+#'
+#' @seealso \code{\link{git_pull_force_remote}} for the opposite direction
+#'   (overwriting local history with the remote's). \code{\link{check_ssh_setup}}
+#'   for diagnosing SSH authentication and home-directory issues.
+#'
+#' @examples
+#' \dontrun{
+#' # Force-push the current branch, with confirmation prompt, lease
+#' # protection, and a local backup tag of the old remote state
+#' git_push_force_remote()
+#'
+#' # Force-push a specific branch without the interactive prompt
+#' # (still requires typing DISCARD if the remote has diverged)
+#' git_push_force_remote(branch = "main", confirm = FALSE)
+#'
+#' # Plain --force (no lease check) -- only for branches you are certain
+#' # no one else pushes to
+#' git_push_force_remote(use_lease = FALSE)
+#'
+#' # Recovering a backup tag later, if needed:
+#' # git log backup/main-2026-07-18-14-30-00
+#' # git checkout backup/main-2026-07-18-14-30-00
+#' }
+#'
+#' @export
+git_push_force_remote <- function(branch = NULL,
+                                  confirm = TRUE,
+                                  use_lease = TRUE,
+                                  backup_tag = TRUE) {
+  if (is.null(branch)) {
+    branch <- tryCatch(
+      system("git rev-parse --abbrev-ref HEAD", intern = TRUE),
+      error = function(e)
+        stop("Could not detect active branch.")
+    )
+  }
+
+  message(
+    sprintf(
+      "- WARNING: This will overwrite the REMOTE history of branch '%s' with your local history.",
+      branch
+    )
+  )
+  message("- Any commits that exist on the remote but not locally will be discarded there.")
+  if (branch %in% c("main", "master")) {
+    message(sprintf(
+      "- NOTE: '%s' looks like a shared/default branch. Double-check that no one else has pushed to it recently.",
+      branch
+    ))
+  }
+  if (use_lease) {
+    message("- Using --force-with-lease as an extra guard against last-second concurrent pushes.")
+  } else {
+    message("- Using plain --force: no lease-based safety check at all. Use with caution.")
+  }
+
+  message(sprintf("- Fetching latest data from 'origin/%s'...", branch))
+  fetch_result <- system("git fetch origin")
+  if (fetch_result != 0) {
+    stop(
+      "[ERROR] Git fetch failed. Verify your system SSH keys and config file ",
+      "paths. Run check_ssh_setup() to diagnose home-directory or missing-key issues."
+    )
+  }
+
+  # Explicit divergence check: commits reachable from origin/<branch> that
+  # are NOT reachable from the local branch. This is the real safety net --
+  # see Details for why --force-with-lease alone does not catch this, since
+  # we just fetched immediately above.
+  remote_ref <- paste0("origin/", branch)
+  divergent_commits <- tryCatch(
+    system2("git", c("rev-list", "--oneline", remote_ref, paste0("^", branch)),
+            stdout = TRUE, stderr = TRUE),
+    error = function(e) character(0)
+  )
+  divergent_commits <- divergent_commits[nzchar(divergent_commits)]
+
+  if (length(divergent_commits) > 0) {
+    message(sprintf(
+      "- [DANGER] The remote branch '%s' has %d commit(s) that do NOT exist in your local history:",
+      branch, length(divergent_commits)
+    ))
+    for (line in utils::head(divergent_commits, 10)) {
+      message(sprintf("    %s", line))
+    }
+    if (length(divergent_commits) > 10) {
+      message(sprintf("    ... and %d more.", length(divergent_commits) - 10))
+    }
+    message("- Forcing this push will permanently remove these commits from the remote branch")
+    message("  (they remain in the backup tag created below, if backup_tag = TRUE, but only locally).")
+
+    resp <- readline(prompt = "Type 'DISCARD' (exactly, in capitals) to confirm you want to erase the commits above: ")
+    if (!identical(trimws(resp), "DISCARD")) {
+      message("[CANCELLED] Operation aborted: divergent remote commits were not confirmed for discard.")
+      return(invisible(FALSE))
+    }
+  } else if (confirm) {
+    message("- No divergent remote-only commits detected; your local history already contains everything on the remote.")
+    resp <- readline(prompt = "Type 'yes' to confirm the force push: ")
+    if (!identical(tolower(trimws(resp)), "yes")) {
+      message("[CANCELLED] Operation aborted by user.")
+      return(invisible(FALSE))
+    }
+  }
+
+  if (backup_tag) {
+    ref_check <- system2("git", c("rev-parse", "--verify", remote_ref),
+                        stdout = FALSE, stderr = FALSE)
+    if (ref_check == 0) {
+      timestamp <- format(Sys.time(), "%Y-%m-%d-%H-%M-%S")
+      tag_name  <- sprintf("backup/%s-%s", branch, timestamp)
+      tag_result <- system2("git", c("tag", tag_name, remote_ref))
+      if (tag_result == 0) {
+        message(sprintf(
+          "- Local backup tag created: %s (points at the remote's current commit).",
+          tag_name
+        ))
+      } else {
+        warning("[WARNING] Failed to create local backup tag. Proceeding without it.")
+      }
+    } else {
+      message("- No existing remote-tracking ref found; skipping backup tag (nothing to back up).")
+    }
+  }
+
+  push_flag <- if (use_lease) "--force-with-lease" else "--force"
+  message(sprintf(
+    "- Pushing local branch '%s' to 'origin/%s' (%s)...",
+    branch, branch, push_flag
+  ))
+  push_result <- system2("git", c("push", push_flag, "origin", branch))
+
+  if (push_result == 0) {
+    message("[SUCCESS] Remote branch now matches local exactly.")
+    if (backup_tag) {
+      message("- If needed, inspect or recover the previous remote state via the backup tag above.")
+    }
+  } else {
+    stop(
+      "[ERROR] Git push failed. This can mean the remote moved again since this function's own ",
+      "fetch (rare, but possible with concurrent pushes), or an SSH authentication issue. Run ",
+      "check_ssh_setup() to diagnose home-directory or missing-key issues, or re-run this ",
+      "function to re-evaluate the current remote state."
+    )
+  }
+
+  invisible(push_result)
+}
+
+
 #' there. This is used to discover the host aliases created for multi-account
 #' Git workflows (e.g. `github.com-work`, `github.com-personal`), so that
 #' [git_clone()] can validate an alias before attempting to use it.

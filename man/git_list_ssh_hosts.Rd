@@ -2,7 +2,9 @@
 % Please edit documentation in R/git_helpers.R
 \name{git_list_ssh_hosts}
 \alias{git_list_ssh_hosts}
-\title{List SSH host aliases configured in ~/.ssh/config}
+\title{there. This is used to discover the host aliases created for multi-account
+Git workflows (e.g. \code{github.com-work}, \code{github.com-personal}), so that
+\code{\link[=git_clone]{git_clone()}} can validate an alias before attempting to use it.}
 \usage{
 git_list_ssh_hosts(ssh_config_path = "~/.ssh/config")
 }
@@ -16,7 +18,6 @@ A character vector of host aliases (may be empty if the file does
 not exist or contains no \code{Host} entries).
 }
 \description{
-Parses the user's SSH config file and returns every \code{Host} entry defined
 there. This is used to discover the host aliases created for multi-account
 Git workflows (e.g. \code{github.com-work}, \code{github.com-personal}), so that
 \code{\link[=git_clone]{git_clone()}} can validate an alias before attempting to use it.

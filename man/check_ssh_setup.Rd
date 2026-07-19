@@ -18,14 +18,28 @@ user regardless of the account aliases they have set up.}
 }
 \value{
 Invisibly returns a list with \code{r_home}, \code{physical_home},
-\code{ssh_dir}, \code{config_exists}, and \code{keys_found}.
+\code{ssh_dir}, \code{config_exists}, \code{keys_found},
+\code{ssh_command_value} (the raw \code{core.sshCommand} string, or
+\code{NA} if unset), and \code{ssh_command_ok} (\code{TRUE} if it
+points at the expected physical config file, \code{FALSE} if it points
+elsewhere or is unset, \code{NA} if it could not be parsed).
 }
 \description{
 Compares R's default \code{~} resolution against the physical home directory
 returned by \code{\link{get_ssh_home}}, warning if they diverge (a sign
 of profile-folder redirection, most often seen on Windows). Also reports
-whether an SSH \code{config} file is present, and lists which private
-key files exist in the physical \code{.ssh} directory. Additionally runs
+whether an SSH \code{config} file is present, lists which private
+key files exist in the physical \code{.ssh} directory, and -- crucially
+-- verifies that Git's global \code{core.sshCommand} setting (if bound
+via \code{\link{git_setup_ssh_config}}) actually points at that same
+physical config file. This last check matters because
+\code{core.sshCommand} is a plain string written once, at bind time; if
+it was bound while running under a different user profile (for example,
+an elevated "Run as Administrator" session, where Windows can resolve
+\code{USERPROFILE} to a different account), it will keep pointing at the
+wrong path indefinitely, causing errors like "Can't open user config
+file ...: No such file or directory" even though the physical
+\code{.ssh/config} and keys are perfectly correct. Additionally runs
 \code{\link{check_cloud_sync_conflicts}} against the \code{.ssh}
 directory to flag OneDrive, Google Drive, iCloud Drive, Dropbox, or Box
 sync folders that could interfere with key files.
