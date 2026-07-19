@@ -117,7 +117,50 @@ check_cloud_sync_conflicts <- function(path) {
   invisible(FALSE)
 }
 
-#' Diagnose SSH Home Resolution and Configuration Status
+#' Build a Per-Call GIT_SSH_COMMAND Environment Override
+#'
+#' Returns a \code{"GIT_SSH_COMMAND=..."} string pointing at \emph{this
+#' machine's own} physical SSH config file (via \code{\link{get_ssh_home}}),
+#' meant to be passed as the \code{env} argument of \code{system2()} on
+#' every network-facing git call (\code{fetch}, \code{pull}, \code{push},
+#' \code{clone}).
+#'
+#' @details
+#' Every network-facing \code{git_*} function in this package uses this
+#' helper instead of relying on Git's \emph{global} \code{core.sshCommand}
+#' setting (the one \code{\link{git_setup_ssh_config}} can optionally bind).
+#' The reason is a failure mode that only shows up across multiple machines
+#' sharing the same cloud-sync account: Git's global config file
+#' (\code{.gitconfig}) is resolved from whatever Git considers \code{$HOME}
+#' on that machine, and if that happens to be redirected into a synced
+#' folder (OneDrive, Google Drive, etc. -- the same redirection
+#' \code{\link{get_ssh_home}} exists to route around), then \code{.gitconfig}
+#' itself is a single shared file. Running \code{\link{git_setup_ssh_config}}
+#' on one machine then silently overwrites the setting on every other
+#' machine signed into that same cloud account, even though each machine's
+#' physical \code{.ssh} directory is (correctly) different.
+#'
+#' Setting \code{GIT_SSH_COMMAND} fresh on every single call, computed from
+#' \emph{this} machine's own \code{\link{get_ssh_home}} at call time, sidesteps
+#' that entirely: it is process-scoped, never written to any file, and
+#' therefore immune to being overwritten by another machine's sync traffic.
+#' It also takes precedence over both \code{core.sshCommand} and any
+#' \code{Host} routing in \code{~/.ssh/config} for that single invocation.
+#'
+#' @return Character. Either a single \code{"GIT_SSH_COMMAND=..."} string
+#'   suitable for \code{system2(..., env = ...)}, or \code{character(0)} if
+#'   no physical \code{.ssh/config} file exists yet on this machine (in
+#'   which case Git falls back to its own default resolution).
+#' @export
+git_ssh_env <- function() {
+  config_file <- file.path(get_ssh_home(), ".ssh", "config")
+  if (!file.exists(config_file)) {
+    return(character(0))
+  }
+  sprintf('GIT_SSH_COMMAND=ssh -F "%s"', config_file)
+}
+
+
 #'
 #' Compares R's default `~` resolution against the physical home directory
 #' returned by \code{\link{get_ssh_home}}, warning if they diverge (a sign
@@ -251,13 +294,43 @@ check_ssh_setup <- function(key_names = NULL) {
           ".ssh/config and keys are correct. It typically happens when",
           "core.sshCommand was bound while running under a different user",
           "profile (e.g. an elevated 'Run as Administrator' session, where",
-          "Windows can resolve USERPROFILE to a different account). Fix it",
-          "by re-running git_setup_ssh_config() from a normal, non-elevated",
-          "session on this machine."
+          "Windows can resolve USERPROFILE to a different account), OR",
+          "when the global .gitconfig file itself lives inside a",
+          "cloud-synced folder shared with another machine (see the check",
+          "below). Fix it by re-running git_setup_ssh_config() from this",
+          "machine, and prefer git_ssh_env()-based calls (used internally",
+          "by this package's pull/push/clone helpers) which are immune to",
+          "this cross-machine sync issue entirely."
         ),
         extracted_path, config_file
       ), call. = FALSE)
       ssh_command_ok <- FALSE
+    }
+  }
+
+  # Beyond the value comparison above, check where the global .gitconfig
+  # file *physically lives*. If it sits inside a cloud-synced folder (most
+  # often because $HOME itself is redirected there, the same redirection
+  # get_ssh_home() routes around), then core.sshCommand is not really a
+  # per-machine setting at all: it is shared, and whichever machine last
+  # wrote to it wins for every machine signed into that same cloud account.
+  # This is precisely the failure mode this package's internal git_ssh_env()
+  # helper is designed to make irrelevant.
+  gitconfig_origin <- tryCatch(
+    system2("git", c("config", "--global", "--show-origin", "--get", "core.sshCommand"),
+            stdout = TRUE, stderr = FALSE),
+    error = function(e) character(0)
+  )
+  gitconfig_origin <- gitconfig_origin[nzchar(gitconfig_origin)]
+  if (length(gitconfig_origin) > 0) {
+    origin_match <- regmatches(gitconfig_origin[1], regexpr("^file:[^\t]+", gitconfig_origin[1]))
+    if (length(origin_match) > 0 && nzchar(origin_match)) {
+      gitconfig_path <- sub("^file:", "", origin_match)
+      message(sprintf("- Global .gitconfig file location: %s", gitconfig_path))
+      was_flagged <- check_cloud_sync_conflicts(gitconfig_path)
+      if (isTRUE(was_flagged)) {
+        message("- Because the file above is cloud-synced, treat 'core.sshCommand' as SHARED across every machine signed into that account, not per-machine. This package's pull/push/clone helpers avoid depending on it for this exact reason (see git_ssh_env()).")
+      }
     }
   }
 
@@ -434,6 +507,13 @@ git_status_check <- function() {
 
 #' Pull Remote Changes Safely via Active SSH Routing
 #'
+#' Uses \code{\link{git_ssh_env}} to set \code{GIT_SSH_COMMAND} for this
+#' single call, pointing at this machine's own physical SSH config file.
+#' This makes the pull immune to a stale or cross-machine-shared global
+#' \code{core.sshCommand} setting (see \code{\link{check_ssh_setup}} for
+#' why that can happen when \code{.gitconfig} itself lives inside a
+#' cloud-synced folder).
+#'
 #' @param branch Character. The target branch name. If NULL, automatically detects the current branch.
 #' @return Invisibly returns the system execution result code.
 #' @export
@@ -451,7 +531,7 @@ git_pull_with_local_id <- function(branch = NULL) {
     ignore.stderr = TRUE
   )
   message(sprintf("- Executing SSH Pull from 'origin/%s'...", branch))
-  result <- system(sprintf("git pull origin %s", shQuote(branch)))
+  result <- system2("git", c("pull", "origin", branch), env = git_ssh_env())
   if (result == 0) {
     message("[SUCCESS] Pull completed successfully.")
   } else {
@@ -465,6 +545,10 @@ git_pull_with_local_id <- function(branch = NULL) {
 
 #' Push Local Changes Safely via Active SSH Routing
 #'
+#' Uses \code{\link{git_ssh_env}} to set \code{GIT_SSH_COMMAND} for this
+#' single call; see \code{\link{git_pull_with_local_id}} for why this
+#' matters more than it might seem.
+#'
 #' @param branch Character. The target branch name. If NULL, automatically detects the current branch.
 #' @return Invisibly returns the system execution result code.
 #' @export
@@ -477,7 +561,7 @@ git_push_with_local_id <- function(branch = NULL) {
     )
   }
   message(sprintf("- Executing SSH Push to 'origin/%s'...", branch))
-  result <- system(sprintf("git push -u origin %s", shQuote(branch)))
+  result <- system2("git", c("push", "-u", "origin", branch), env = git_ssh_env())
   if (result == 0) {
     message("[SUCCESS] Push completed successfully.")
   } else {
@@ -656,7 +740,7 @@ git_pull_force_remote <- function(branch = NULL,
   )
 
   message(sprintf("- Fetching latest data from 'origin/%s'...", branch))
-  fetch_result <- system("git fetch origin")
+  fetch_result <- system2("git", c("fetch", "origin"), env = git_ssh_env())
   if (fetch_result != 0) {
     stop(
       "[ERROR] Git fetch failed. Verify your system SSH keys and config file ",
@@ -846,7 +930,7 @@ git_push_force_remote <- function(branch = NULL,
   }
 
   message(sprintf("- Fetching latest data from 'origin/%s'...", branch))
-  fetch_result <- system("git fetch origin")
+  fetch_result <- system2("git", c("fetch", "origin"), env = git_ssh_env())
   if (fetch_result != 0) {
     stop(
       "[ERROR] Git fetch failed. Verify your system SSH keys and config file ",
@@ -919,7 +1003,7 @@ git_push_force_remote <- function(branch = NULL,
     "- Pushing local branch '%s' to 'origin/%s' (%s)...",
     branch, branch, push_flag
   ))
-  push_result <- system2("git", c("push", push_flag, "origin", branch))
+  push_result <- system2("git", c("push", push_flag, "origin", branch), env = git_ssh_env())
 
   if (push_result == 0) {
     message("[SUCCESS] Remote branch now matches local exactly.")
@@ -1072,7 +1156,7 @@ git_clone <- function(repo,
   args <- c(args, ssh_url, dest_dir)
 
   status <- system2("git", args, stdout = if (quiet) {FALSE} else {""},
-                    stderr = if (quiet) {FALSE} else {""})
+                    stderr = if (quiet) {FALSE} else {""}, env = git_ssh_env())
 
   if (status != 0) {
     stop(sprintf(
