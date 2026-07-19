@@ -2,7 +2,24 @@
 % Please edit documentation in R/git_helpers.R
 \name{check_ssh_setup}
 \alias{check_ssh_setup}
-\title{Diagnose SSH Home Resolution and Configuration Status}
+\title{Compares R's default \code{~} resolution against the physical home directory
+returned by \code{\link{get_ssh_home}}, warning if they diverge (a sign
+of profile-folder redirection, most often seen on Windows). Also reports
+whether an SSH \code{config} file is present, lists which private
+key files exist in the physical \code{.ssh} directory, and -- crucially
+-- verifies that Git's global \code{core.sshCommand} setting (if bound
+via \code{\link{git_setup_ssh_config}}) actually points at that same
+physical config file. This last check matters because
+\code{core.sshCommand} is a plain string written once, at bind time; if
+it was bound while running under a different user profile (for example,
+an elevated "Run as Administrator" session, where Windows can resolve
+\code{USERPROFILE} to a different account), it will keep pointing at the
+wrong path indefinitely, causing errors like "Can't open user config
+file ...: No such file or directory" even though the physical
+\code{.ssh/config} and keys are perfectly correct. Additionally runs
+\code{\link{check_cloud_sync_conflicts}} against the \code{.ssh}
+directory to flag OneDrive, Google Drive, iCloud Drive, Dropbox, or Box
+sync folders that could interfere with key files.}
 \usage{
 check_ssh_setup(key_names = NULL)
 }

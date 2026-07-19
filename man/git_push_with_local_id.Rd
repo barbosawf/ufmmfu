@@ -13,5 +13,7 @@ git_push_with_local_id(branch = NULL)
 Invisibly returns the system execution result code.
 }
 \description{
-Push Local Changes Safely via Active SSH Routing
+Uses \code{\link{git_ssh_env}} to set \code{GIT_SSH_COMMAND} for this
+single call; see \code{\link{git_pull_with_local_id}} for why this
+matters more than it might seem.
 }

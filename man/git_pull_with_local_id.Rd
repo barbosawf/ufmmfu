@@ -13,5 +13,10 @@ git_pull_with_local_id(branch = NULL)
 Invisibly returns the system execution result code.
 }
 \description{
-Pull Remote Changes Safely via Active SSH Routing
+Uses \code{\link{git_ssh_env}} to set \code{GIT_SSH_COMMAND} for this
+single call, pointing at this machine's own physical SSH config file.
+This makes the pull immune to a stale or cross-machine-shared global
+\code{core.sshCommand} setting (see \code{\link{check_ssh_setup}} for
+why that can happen when \code{.gitconfig} itself lives inside a
+cloud-synced folder).
 }
