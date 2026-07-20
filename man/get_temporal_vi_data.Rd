@@ -28,7 +28,13 @@ get_temporal_vi_data(
   mask = NULL,
   save_raster = FALSE,
   raster_output_path = NULL,
-  batch_size = NULL
+  batch_size = NULL,
+  save_data = FALSE,
+  data_output_path = NULL,
+  save_imagecount = FALSE,
+  imagecount_output_path = NULL,
+  save_validation = FALSE,
+  validation_output_path = NULL
 )
 }
 \arguments{
@@ -139,6 +145,39 @@ phase's image count exceeds \code{batch_size}, images are grouped into
 smaller Earth Engine download requests instead of one large combined
 request, and the results are stitched back together locally. See
 Details ("Memory usage with many images").}
+
+\item{save_data}{Logical, default \code{FALSE}. If \code{TRUE}, the final
+per-region \code{Data} tibble -- the same object returned in
+\code{$Data} -- is written to disk as a \code{.csv} file.}
+
+\item{data_output_path}{Optional character path to a folder where
+\code{Data} tibbles are saved when \code{save_data = TRUE}. If
+\code{NULL} (default), a \code{"data_outputs"} folder is created inside
+the current working directory. Each file is named with the region and
+a date so repeated runs, or multiple regions in the same run, never
+overwrite each other.}
+
+\item{save_imagecount}{Logical, default \code{FALSE}. If \code{TRUE}, the
+final per-region \code{ImageCount} tibble -- the same object returned
+in \code{$ImageCount} -- is written to disk as a \code{.csv} file.}
+
+\item{imagecount_output_path}{Optional character path to a folder where
+\code{ImageCount} tibbles are saved when \code{save_imagecount = TRUE}.
+If \code{NULL} (default), an \code{"imagecount_outputs"} folder is
+created inside the current working directory. Each file is named with
+the region and a date so repeated runs, or multiple regions in the
+same run, never overwrite each other.}
+
+\item{save_validation}{Logical, default \code{FALSE}. If \code{TRUE}, the
+final per-region \code{Validation} tibble -- the same object returned
+in \code{$Validation} -- is written to disk as a \code{.csv} file.}
+
+\item{validation_output_path}{Optional character path to a folder where
+\code{Validation} tibbles are saved when \code{save_validation = TRUE}.
+If \code{NULL} (default), a \code{"validation_outputs"} folder is
+created inside the current working directory. Each file is named with
+the region and a date so repeated runs, or multiple regions in the
+same run, never overwrite each other.}
 }
 \value{
 A named list, one entry per region in \code{shapefiles}, each
@@ -298,16 +337,24 @@ separate calls to the function.
       summarize_raster = FALSE,   # per-image indices -> needed for batch_size
       mask             = exclusion_mask,
       save_raster      = TRUE,
-      raster_output_path = "rasters/s2_2023_2024",
-      batch_size       = 5        # download 5 images per EE request at a time
+      raster_output_path = "outputs/s2_2023_2024/rasters",
+      batch_size       = 5,       # download 5 images per EE request at a time
+      save_data        = TRUE,
+      data_output_path = "outputs/s2_2023_2024/data",
+      save_imagecount  = TRUE,
+      imagecount_output_path = "outputs/s2_2023_2024/image_count",
+      save_validation  = TRUE,
+      validation_output_path = "outputs/s2_2023_2024/validation"
     )
 
   # Per-plot/per-phase summary statistics
   result$FarmA$Data
 
-  # Rasters were also written to rasters/s2_2023_2024/, one GeoTIFF per
-  # region, named e.g. "raster_FarmA_20260718_223045_0417.tif"
-  list.files("rasters/s2_2023_2024")
+  # Rasters, Data, ImageCount, and Validation were also written to disk,
+  # one file per region, each named with the region and today's date,
+  # e.g. "raster_FarmA_2026_07_20_0417.tif" /
+  # "data_FarmA_2026_07_20_0417.csv"
+  list.files("outputs/s2_2023_2024", recursive = TRUE)
 }
 
 }

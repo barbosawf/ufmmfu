@@ -167,6 +167,33 @@
 #'   smaller Earth Engine download requests instead of one large combined
 #'   request, and the results are stitched back together locally. See
 #'   Details ("Memory usage with many images").
+#' @param save_data Logical, default \code{FALSE}. If \code{TRUE}, the final
+#'   per-region \code{Data} tibble -- the same object returned in
+#'   \code{$Data} -- is written to disk as a \code{.csv} file.
+#' @param data_output_path Optional character path to a folder where
+#'   \code{Data} tibbles are saved when \code{save_data = TRUE}. If
+#'   \code{NULL} (default), a \code{"data_outputs"} folder is created inside
+#'   the current working directory. Each file is named with the region and
+#'   a date so repeated runs, or multiple regions in the same run, never
+#'   overwrite each other.
+#' @param save_imagecount Logical, default \code{FALSE}. If \code{TRUE}, the
+#'   final per-region \code{ImageCount} tibble -- the same object returned
+#'   in \code{$ImageCount} -- is written to disk as a \code{.csv} file.
+#' @param imagecount_output_path Optional character path to a folder where
+#'   \code{ImageCount} tibbles are saved when \code{save_imagecount = TRUE}.
+#'   If \code{NULL} (default), an \code{"imagecount_outputs"} folder is
+#'   created inside the current working directory. Each file is named with
+#'   the region and a date so repeated runs, or multiple regions in the
+#'   same run, never overwrite each other.
+#' @param save_validation Logical, default \code{FALSE}. If \code{TRUE}, the
+#'   final per-region \code{Validation} tibble -- the same object returned
+#'   in \code{$Validation} -- is written to disk as a \code{.csv} file.
+#' @param validation_output_path Optional character path to a folder where
+#'   \code{Validation} tibbles are saved when \code{save_validation = TRUE}.
+#'   If \code{NULL} (default), a \code{"validation_outputs"} folder is
+#'   created inside the current working directory. Each file is named with
+#'   the region and a date so repeated runs, or multiple regions in the
+#'   same run, never overwrite each other.
 #'
 #' @return A named list, one entry per region in \code{shapefiles}, each
 #'   containing:
@@ -241,16 +268,24 @@
 #'       summarize_raster = FALSE,   # per-image indices -> needed for batch_size
 #'       mask             = exclusion_mask,
 #'       save_raster      = TRUE,
-#'       raster_output_path = "rasters/s2_2023_2024",
-#'       batch_size       = 5        # download 5 images per EE request at a time
+#'       raster_output_path = "outputs/s2_2023_2024/rasters",
+#'       batch_size       = 5,       # download 5 images per EE request at a time
+#'       save_data        = TRUE,
+#'       data_output_path = "outputs/s2_2023_2024/data",
+#'       save_imagecount  = TRUE,
+#'       imagecount_output_path = "outputs/s2_2023_2024/image_count",
+#'       save_validation  = TRUE,
+#'       validation_output_path = "outputs/s2_2023_2024/validation"
 #'     )
 #'
 #'   # Per-plot/per-phase summary statistics
 #'   result$FarmA$Data
 #'
-#'   # Rasters were also written to rasters/s2_2023_2024/, one GeoTIFF per
-#'   # region, named e.g. "raster_FarmA_20260718_223045_0417.tif"
-#'   list.files("rasters/s2_2023_2024")
+#'   # Rasters, Data, ImageCount, and Validation were also written to disk,
+#'   # one file per region, each named with the region and today's date,
+#'   # e.g. "raster_FarmA_2026_07_20_0417.tif" /
+#'   # "data_FarmA_2026_07_20_0417.csv"
+#'   list.files("outputs/s2_2023_2024", recursive = TRUE)
 #' }
 #'
 #' @export
@@ -279,7 +314,13 @@ get_temporal_vi_data <-
     mask = NULL,
     save_raster = FALSE,
     raster_output_path = NULL,
-    batch_size = NULL
+    batch_size = NULL,
+    save_data = FALSE,
+    data_output_path = NULL,
+    save_imagecount = FALSE,
+    imagecount_output_path = NULL,
+    save_validation = FALSE,
+    validation_output_path = NULL
   ) {
 
 
@@ -1096,7 +1137,7 @@ get_temporal_vi_data <-
 
           }
 
-          # Region name + timestamp + a random suffix guarantee a unique
+          # Region name + date + a random suffix guarantee a unique
           # filename across regions and across repeated runs of the
           # function, so earlier saved rasters are never overwritten.
           raster_filename <-
@@ -1104,7 +1145,7 @@ get_temporal_vi_data <-
               output_dir,
               paste0(
                 "raster_", region, "_",
-                format(Sys.time(), "%Y%m%d_%H%M%S"), "_",
+                format(Sys.Date(), "%Y_%m_%d"), "_",
                 sprintf("%04d", sample.int(9999, 1)),
                 ".tif"
               )
@@ -1154,6 +1195,25 @@ get_temporal_vi_data <-
             bands_regex <-
               paste0("^(", phases_escaped, ")[_\\.]+(\\d+)[_\\.]+(", bands_escaped, ")$")
 
+            # A phase with zero images (e.g. no images fell inside its
+            # date range) never appears in Data at all -- it contributed
+            # no bands, hence no pivoted rows. A plain right_join(phase_tb)
+            # would still add that phase back in, but since it has no
+            # match on the left side, EVERY left-side column -- including
+            # Region and Plot -- would be filled with NA, producing a
+            # single phantom row with Region = NA, Plot = NA instead of
+            # one row per real plot. Building the full Region x Plot x
+            # Phase grid up front and left-joining the real data onto it
+            # keeps Region/Plot always populated with real identifiers,
+            # with NA appearing only in the measurement columns for
+            # phases that truly had no data.
+            phase_plot_grid <-
+              tidyr::expand_grid(
+                Region = forcats::as_factor(region),
+                Plot = forcats::as_factor(plot_ids),
+                phase_tb |> dplyr::mutate(Phase = as.character(Phase))
+              )
+
             Data <- Data |>
               tidyr::pivot_longer(
                 cols = !dplyr::any_of(c("x", "y", "Plot")),
@@ -1161,14 +1221,18 @@ get_temporal_vi_data <-
                 names_pattern = bands_regex
               ) |>
               dplyr::mutate(
-                Phase = forcats::as_factor(Phase),
                 Plot = forcats::as_factor(Plot),
                 ImageIndex = as.integer(ImageIndex)
               ) |>
               tibble::add_column(
                 Region = forcats::as_factor(region), .before = "x"
               ) |>
-              dplyr::right_join(phase_tb) |>
+              dplyr::mutate(Phase = as.character(Phase)) |>
+              dplyr::full_join(
+                phase_plot_grid,
+                by = c("Region", "Plot", "Phase")
+              ) |>
+              dplyr::mutate(Phase = forcats::as_factor(Phase)) |>
               dplyr::relocate("start_date", "end_date", .after = "Phase") |>
               dplyr::relocate("Year", .before = "Phase")
 
@@ -1178,6 +1242,15 @@ get_temporal_vi_data <-
             # per-phase temporal mean/median, computed on the GEE side.
             bands_regex <- paste0("^(", phases_escaped, ")[_\\.]+(", bands_escaped, ")$")
 
+            # See comment above (use_raw_images branch) for why a grid +
+            # left_join is used instead of right_join(phase_tb).
+            phase_plot_grid <-
+              tidyr::expand_grid(
+                Region = forcats::as_factor(region),
+                Plot = forcats::as_factor(plot_ids),
+                phase_tb |> dplyr::mutate(Phase = as.character(Phase))
+              )
+
             Data <- Data |>
               tidyr::pivot_longer(
                 cols = !dplyr::any_of(c("x", "y", "Plot")),
@@ -1185,13 +1258,17 @@ get_temporal_vi_data <-
                 names_pattern = bands_regex
               ) |>
               dplyr::mutate(
-                Phase = forcats::as_factor(Phase),
                 Plot = forcats::as_factor(Plot)
               ) |>
               tibble::add_column(
                 Region = forcats::as_factor(region), .before = "x"
               ) |>
-              dplyr::right_join(phase_tb) |>
+              dplyr::mutate(Phase = as.character(Phase)) |>
+              dplyr::full_join(
+                phase_plot_grid,
+                by = c("Region", "Plot", "Phase")
+              ) |>
+              dplyr::mutate(Phase = forcats::as_factor(Phase)) |>
               dplyr::relocate("start_date", "end_date", .after = "Phase") |>
               dplyr::relocate("Year", .before = "Phase")
 
@@ -1423,6 +1500,145 @@ get_temporal_vi_data <-
         }
 
         gc()
+
+
+        if (save_data) {
+
+          output_dir <-
+            if (is.null(data_output_path)) {
+
+              file.path(getwd(), "data_outputs")
+
+            } else {
+
+              data_output_path
+
+            }
+
+          if (!dir.exists(output_dir)) {
+
+            dir.create(output_dir, recursive = TRUE)
+
+          }
+
+          data_filename <-
+            file.path(
+              output_dir,
+              paste0(
+                "data_", region, "_",
+                format(Sys.Date(), "%Y_%m_%d"), "_",
+                sprintf("%04d", sample.int(9999, 1)),
+                ".csv"
+              )
+            )
+
+          tryCatch(
+            {
+              utils::write.csv(Data, data_filename, row.names = FALSE)
+              message("Region '", region, "': Data saved to ", data_filename)
+            },
+            error = function(e) {
+              message(
+                "Error saving Data for ", region, ": ", e$message
+              )
+            }
+          )
+
+        }
+
+
+        if (save_imagecount) {
+
+          output_dir <-
+            if (is.null(imagecount_output_path)) {
+
+              file.path(getwd(), "imagecount_outputs")
+
+            } else {
+
+              imagecount_output_path
+
+            }
+
+          if (!dir.exists(output_dir)) {
+
+            dir.create(output_dir, recursive = TRUE)
+
+          }
+
+          imagecount_filename <-
+            file.path(
+              output_dir,
+              paste0(
+                "imagecount_", region, "_",
+                format(Sys.Date(), "%Y_%m_%d"), "_",
+                sprintf("%04d", sample.int(9999, 1)),
+                ".csv"
+              )
+            )
+
+          tryCatch(
+            {
+              utils::write.csv(ImageCount, imagecount_filename, row.names = FALSE)
+              message(
+                "Region '", region, "': ImageCount saved to ", imagecount_filename
+              )
+            },
+            error = function(e) {
+              message(
+                "Error saving ImageCount for ", region, ": ", e$message
+              )
+            }
+          )
+
+        }
+
+
+        if (save_validation) {
+
+          output_dir <-
+            if (is.null(validation_output_path)) {
+
+              file.path(getwd(), "validation_outputs")
+
+            } else {
+
+              validation_output_path
+
+            }
+
+          if (!dir.exists(output_dir)) {
+
+            dir.create(output_dir, recursive = TRUE)
+
+          }
+
+          validation_filename <-
+            file.path(
+              output_dir,
+              paste0(
+                "validation_", region, "_",
+                format(Sys.Date(), "%Y_%m_%d"), "_",
+                sprintf("%04d", sample.int(9999, 1)),
+                ".csv"
+              )
+            )
+
+          tryCatch(
+            {
+              utils::write.csv(Validation, validation_filename, row.names = FALSE)
+              message(
+                "Region '", region, "': Validation saved to ", validation_filename
+              )
+            },
+            error = function(e) {
+              message(
+                "Error saving Validation for ", region, ": ", e$message
+              )
+            }
+          )
+
+        }
 
 
         list(

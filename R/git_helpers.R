@@ -157,7 +157,19 @@ git_ssh_env <- function() {
   if (!file.exists(config_file)) {
     return(character(0))
   }
-  sprintf('GIT_SSH_COMMAND=ssh -F "%s"', config_file)
+  # IMPORTANT: system2(..., env = ...) does not itself shell-quote the
+  # "NAME=value" strings it is given; it splices them as-is in front of the
+  # command line. If `value` contains an unquoted space (as "ssh -F <path>"
+  # always does), the shell parses it as multiple separate words instead of
+  # one assignment, and whatever follows the first space (e.g. "-F") gets
+  # interpreted as the command to run -- producing errors like
+  # "sh: 1: -F: not found" instead of ever invoking ssh. Wrapping the path
+  # in shQuote() protects any spaces inside the path itself (Git then
+  # re-parses that same quoting when it runs GIT_SSH_COMMAND through a
+  # shell), and wrapping the *entire* "ssh -F '...'" value in a second
+  # shQuote() is what keeps system2()'s own splicing from splitting it.
+  ssh_cmd <- sprintf("ssh -F %s", shQuote(config_file))
+  sprintf("GIT_SSH_COMMAND=%s", shQuote(ssh_cmd))
 }
 
 
@@ -248,11 +260,11 @@ check_ssh_setup <- function(key_names = NULL) {
   # physical file discovered above, so a mismatch here is the direct cause
   # of "Can't open user config file" / "no such identity" errors even when
   # everything else looks fine.
-  git_ssh_command <- tryCatch(
+  git_ssh_command <- suppressWarnings(tryCatch(
     system2("git", c("config", "--global", "--get", "core.sshCommand"),
             stdout = TRUE, stderr = FALSE),
     error = function(e) character(0)
-  )
+  ))
   git_ssh_command <- git_ssh_command[nzchar(git_ssh_command)]
 
   ssh_command_value <- NA_character_
@@ -316,11 +328,11 @@ check_ssh_setup <- function(key_names = NULL) {
   # wrote to it wins for every machine signed into that same cloud account.
   # This is precisely the failure mode this package's internal git_ssh_env()
   # helper is designed to make irrelevant.
-  gitconfig_origin <- tryCatch(
+  gitconfig_origin <- suppressWarnings(tryCatch(
     system2("git", c("config", "--global", "--show-origin", "--get", "core.sshCommand"),
             stdout = TRUE, stderr = FALSE),
     error = function(e) character(0)
-  )
+  ))
   gitconfig_origin <- gitconfig_origin[nzchar(gitconfig_origin)]
   if (length(gitconfig_origin) > 0) {
     origin_match <- regmatches(gitconfig_origin[1], regexpr("^file:[^\t]+", gitconfig_origin[1]))
