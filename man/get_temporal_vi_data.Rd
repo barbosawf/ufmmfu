@@ -25,8 +25,9 @@ get_temporal_vi_data(
   valid_values_threshold = 0.1,
   mask = NULL,
   download_route = "drive",
+  gcs_bucket = NULL,
   max_pixels = 1e+12,
-  clean_drive = TRUE,
+  clean_container = TRUE,
   save_raster = FALSE,
   raster_output_path = NULL,
   save_data = "none",
@@ -121,14 +122,32 @@ extent internally and applied via \code{updateMask()}, so a single
 mask is automatically adapted to every region in \code{shapefiles}. If
 \code{NULL} (default), no mask is applied.}
 
-\item{download_route}{Passed to \code{rgee::ee_as_rast()}, e.g.
-\code{"drive"} or \code{"gcs"}.}
+\item{download_route}{Passed to \code{rgee::ee_as_rast()} as \code{via},
+e.g. \code{"drive"} or \code{"gcs"}.
+\itemize{
+\item \code{"drive"} (default): the image is exported to a folder in
+your Google Drive and downloaded from there. Works out of the box with
+the same OAuth authentication used by \code{ee_Initialize()}.
+\item \code{"gcs"}: the image is exported to a Google Cloud Storage
+bucket instead. Requires billing enabled on the GCP project and an
+existing bucket -- see \code{gcs_bucket}. Authenticate either with
+\code{ee_Initialize(gcs = TRUE)} or a Service Account Key registered
+via \code{rgee::ee_utils_sak_copy()}/\code{rgee::ee_utils_sak_validate()}.
+}}
+
+\item{gcs_bucket}{Character, name of an existing Google Cloud Storage
+bucket to use as the export container. Required when
+\code{download_route == "gcs"}; ignored otherwise (the Drive route
+always uses the \code{"rgee_backup"} container name). Passed to
+\code{rgee::ee_as_rast()} as \code{container}.}
 
 \item{max_pixels}{Passed to \code{rgee::ee_as_rast()} as \code{maxPixels}.}
 
-\item{clean_drive}{Logical, default \code{TRUE}. If \code{TRUE} and
-\code{download_route == "drive"}, calls
-\code{rgee::ee_clean_container()} after each region's download.}
+\item{clean_container}{Logical, default \code{TRUE}. If \code{TRUE},
+calls \code{rgee::ee_clean_container()} after each region's download,
+targeting the Drive folder or GCS bucket matching \code{download_route}
+(\code{"rgee_backup"} for \code{"drive"}, \code{gcs_bucket} for
+\code{"gcs"}).}
 
 \item{save_raster}{Logical, default \code{FALSE}. If \code{TRUE}, the
 final processed raster for each region -- the same object returned in

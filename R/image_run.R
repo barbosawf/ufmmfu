@@ -151,12 +151,29 @@
 #'   extent internally and applied via \code{updateMask()}, so a single
 #'   mask is automatically adapted to every region in \code{shapefiles}. If
 #'   \code{NULL} (default), no mask is applied.
-#' @param download_route Passed to \code{rgee::ee_as_rast()}, e.g.
-#'   \code{"drive"} or \code{"gcs"}.
+#' @param download_route Passed to \code{rgee::ee_as_rast()} as \code{via},
+#'   e.g. \code{"drive"} or \code{"gcs"}.
+#'   \itemize{
+#'     \item \code{"drive"} (default): the image is exported to a folder in
+#'     your Google Drive and downloaded from there. Works out of the box with
+#'     the same OAuth authentication used by \code{ee_Initialize()}.
+#'     \item \code{"gcs"}: the image is exported to a Google Cloud Storage
+#'     bucket instead. Requires billing enabled on the GCP project and an
+#'     existing bucket -- see \code{gcs_bucket}. Authenticate either with
+#'     \code{ee_Initialize(gcs = TRUE)} or a Service Account Key registered
+#'     via \code{rgee::ee_utils_sak_copy()}/\code{rgee::ee_utils_sak_validate()}.
+#'   }
+#' @param gcs_bucket Character, name of an existing Google Cloud Storage
+#'   bucket to use as the export container. Required when
+#'   \code{download_route == "gcs"}; ignored otherwise (the Drive route
+#'   always uses the \code{"rgee_backup"} container name). Passed to
+#'   \code{rgee::ee_as_rast()} as \code{container}.
 #' @param max_pixels Passed to \code{rgee::ee_as_rast()} as \code{maxPixels}.
-#' @param clean_drive Logical, default \code{TRUE}. If \code{TRUE} and
-#'   \code{download_route == "drive"}, calls
-#'   \code{rgee::ee_clean_container()} after each region's download.
+#' @param clean_container Logical, default \code{TRUE}. If \code{TRUE},
+#'   calls \code{rgee::ee_clean_container()} after each region's download,
+#'   targeting the Drive folder or GCS bucket matching \code{download_route}
+#'   (\code{"rgee_backup"} for \code{"drive"}, \code{gcs_bucket} for
+#'   \code{"gcs"}).
 #' @param save_raster Logical, default \code{FALSE}. If \code{TRUE}, the
 #'   final processed raster for each region -- the same object returned in
 #'   \code{$Raster}, i.e. the version right before it is turned into a
@@ -309,8 +326,9 @@ get_temporal_vi_data <-
     valid_values_threshold = 0.1,
     mask = NULL,
     download_route = "drive",
+    gcs_bucket = NULL,
     max_pixels = 1e12,
-    clean_drive = TRUE,
+    clean_container = TRUE,
     save_raster = FALSE,
     raster_output_path = NULL,
     save_data = "none",
@@ -342,6 +360,24 @@ get_temporal_vi_data <-
     }
 
     save_formats <- unique(save_data[save_data != "none"])
+
+
+    if (download_route == "gcs" && is.null(gcs_bucket)) {
+
+      stop(
+        "download_route = \"gcs\" requires gcs_bucket (the name of an ",
+        "existing Google Cloud Storage bucket). Create one and pass its ",
+        "name, e.g. gcs_bucket = \"my-bucket\". See rgee::ee_utils_sak_copy() ",
+        "/ rgee::ee_utils_sak_validate() for GCS authentication setup."
+      )
+
+    }
+
+    # The container rgee exports into: a Drive folder name for "drive", or a
+    # GCS bucket name for "gcs". Shared between the ee_as_rast() calls below
+    # and the matching ee_clean_container() cleanup, so both always target
+    # the same place.
+    container_name <- if (download_route == "gcs") gcs_bucket else "rgee_backup"
 
 
     is_image_collection <-
@@ -925,6 +961,7 @@ get_temporal_vi_data <-
                     region = download_region,
                     scale = download_scale,
                     via = download_route,
+                    container = container_name,
                     crs = crs,
                     maxPixels = max_pixels
                   ),
@@ -937,9 +974,9 @@ get_temporal_vi_data <-
                   }
                 )
 
-              if (clean_drive && download_route == "drive") {
+              if (clean_container && download_route %in% c("drive", "gcs")) {
 
-                rgee::ee_clean_container(name = "rgee_backup", type = "drive")
+                rgee::ee_clean_container(name = container_name, type = download_route)
 
               }
 
@@ -999,6 +1036,7 @@ get_temporal_vi_data <-
                 region = download_region,
                 scale = download_scale,
                 via = download_route,
+                container = container_name,
                 crs = crs,
                 maxPixels = max_pixels
               ),
@@ -1009,14 +1047,16 @@ get_temporal_vi_data <-
             )
 
 
-          if (clean_drive && download_route == "drive") {
+          if (clean_container && download_route %in% c("drive", "gcs")) {
 
-            rgee::ee_clean_container(name = "rgee_backup", type = "drive")
+            rgee::ee_clean_container(name = container_name, type = download_route)
 
-          } else if (download_route == "drive") {
+          } else if (download_route %in% c("drive", "gcs")) {
 
             message(
-              "clean_drive = FALSE: keeping files on Google Drive for ", region, "."
+              "clean_container = FALSE: keeping files on ",
+              if (download_route == "gcs") "Google Cloud Storage" else "Google Drive",
+              " for ", region, "."
             )
 
           }
