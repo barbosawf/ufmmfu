@@ -173,6 +173,64 @@ git_ssh_env <- function() {
 }
 
 
+#' Run a `git` Command With a Per-Call SSH Override (Cross-Platform)
+#'
+#' Replacement for calling \code{system2("git", ..., env = git_ssh_env())}
+#' directly. \code{system2()}'s \code{env} argument does \emph{not} set a
+#' real environment variable for the child process: it works by pasting the
+#' \code{"NAME=value"} string onto the front of the command line and handing
+#' the whole thing to the shell, relying on the shell itself to interpret
+#' the leading \code{VAR=value} as a one-off environment assignment before
+#' running the command. That is a POSIX shell feature (`sh`/`bash`
+#' understand \code{VAR=value command}), and it is what makes
+#' \code{env = git_ssh_env()} appear to work when tested on Linux/macOS.
+#' \code{cmd.exe} on Windows has no equivalent syntax, so on Windows the
+#' entire \code{"GIT_SSH_COMMAND=..."} string is instead passed straight
+#' through to \code{git.exe} as a literal (and invalid) first argument --
+#' producing errors like \code{git: 'GIT_SSH_COMMAND=...' is not a git
+#' command}, even though the string \code{\link{git_ssh_env}} builds is
+#' itself perfectly correct.
+#'
+#' This function sidesteps the whole problem by setting
+#' \code{GIT_SSH_COMMAND} directly on the current R process with
+#' \code{Sys.setenv()} -- which \emph{is} correctly inherited by child
+#' processes spawned via \code{system2()} on every platform -- running the
+#' command, and restoring whatever value (or absence of one) the variable
+#' had beforehand.
+#'
+#' @param args Character vector of arguments passed to \code{git} (e.g.
+#'   \code{c("pull", "origin", "main")}).
+#' @param ... Additional arguments forwarded to \code{system2()}, such as
+#'   \code{stdout} or \code{stderr}.
+#' @return The integer status code returned by \code{system2()}.
+#' @seealso \code{\link{git_ssh_env}}
+#' @keywords internal
+#' @export
+git_system2 <- function(args, ...) {
+  config_file <- file.path(get_ssh_home(), ".ssh", "config")
+
+  if (!file.exists(config_file)) {
+    # No physical config file yet on this machine: fall back to whatever
+    # git/ssh would resolve on their own (matches git_ssh_env()'s own
+    # fallback behavior).
+    return(system2("git", args, ...))
+  }
+
+  ssh_cmd <- sprintf("ssh -F %s", shQuote(config_file))
+
+  old_value <- Sys.getenv("GIT_SSH_COMMAND", unset = NA)
+  Sys.setenv(GIT_SSH_COMMAND = ssh_cmd)
+  on.exit({
+    if (is.na(old_value)) {
+      Sys.unsetenv("GIT_SSH_COMMAND")
+    } else {
+      Sys.setenv(GIT_SSH_COMMAND = old_value)
+    }
+  }, add = TRUE)
+
+  system2("git", args, ...)
+}
+
 #'
 #' Compares R's default `~` resolution against the physical home directory
 #' returned by \code{\link{get_ssh_home}}, warning if they diverge (a sign
@@ -543,7 +601,7 @@ git_pull_with_local_id <- function(branch = NULL) {
     ignore.stderr = TRUE
   )
   message(sprintf("- Executing SSH Pull from 'origin/%s'...", branch))
-  result <- system2("git", c("pull", "origin", branch), env = git_ssh_env())
+  result <- git_system2(c("pull", "origin", branch))
   if (result == 0) {
     message("[SUCCESS] Pull completed successfully.")
   } else {
@@ -573,7 +631,7 @@ git_push_with_local_id <- function(branch = NULL) {
     )
   }
   message(sprintf("- Executing SSH Push to 'origin/%s'...", branch))
-  result <- system2("git", c("push", "-u", "origin", branch), env = git_ssh_env())
+  result <- git_system2(c("push", "-u", "origin", branch))
   if (result == 0) {
     message("[SUCCESS] Push completed successfully.")
   } else {
@@ -752,7 +810,7 @@ git_pull_force_remote <- function(branch = NULL,
   )
 
   message(sprintf("- Fetching latest data from 'origin/%s'...", branch))
-  fetch_result <- system2("git", c("fetch", "origin"), env = git_ssh_env())
+  fetch_result <- git_system2(c("fetch", "origin"))
   if (fetch_result != 0) {
     stop(
       "[ERROR] Git fetch failed. Verify your system SSH keys and config file ",
@@ -942,7 +1000,7 @@ git_push_force_remote <- function(branch = NULL,
   }
 
   message(sprintf("- Fetching latest data from 'origin/%s'...", branch))
-  fetch_result <- system2("git", c("fetch", "origin"), env = git_ssh_env())
+  fetch_result <- git_system2(c("fetch", "origin"))
   if (fetch_result != 0) {
     stop(
       "[ERROR] Git fetch failed. Verify your system SSH keys and config file ",
@@ -1015,7 +1073,7 @@ git_push_force_remote <- function(branch = NULL,
     "- Pushing local branch '%s' to 'origin/%s' (%s)...",
     branch, branch, push_flag
   ))
-  push_result <- system2("git", c("push", push_flag, "origin", branch), env = git_ssh_env())
+  push_result <- git_system2(c("push", push_flag, "origin", branch))
 
   if (push_result == 0) {
     message("[SUCCESS] Remote branch now matches local exactly.")
@@ -1167,8 +1225,8 @@ git_clone <- function(repo,
   if (!is.null(depth)) args <- c(args, "--depth", as.character(depth))
   args <- c(args, ssh_url, dest_dir)
 
-  status <- system2("git", args, stdout = if (quiet) {FALSE} else {""},
-                    stderr = if (quiet) {FALSE} else {""}, env = git_ssh_env())
+  status <- git_system2(args, stdout = if (quiet) {FALSE} else {""},
+                        stderr = if (quiet) {FALSE} else {""})
 
   if (status != 0) {
     stop(sprintf(
