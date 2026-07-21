@@ -104,6 +104,13 @@
 #'   downloaded and vegetation indices are calculated per image; the
 #'   temporal aggregation (\code{mean_or_median}) is then applied afterward,
 #'   per pixel, across those per-image index values. See Details.
+#' @param batch_size Optional integer. Only relevant when
+#'   \code{summarize_raster = FALSE} (individual images are downloaded
+#'   rather than a single temporally-reduced image per phase). When a
+#'   phase's image count exceeds \code{batch_size}, images are grouped into
+#'   smaller Earth Engine download requests instead of one large combined
+#'   request, and the results are stitched back together locally. See
+#'   Details ("Memory usage with many images").
 #' @param target_scale_m Numeric, desired output pixel size in meters for the
 #'   final local product. Ignored when \code{use_native_scale = TRUE}.
 #' @param use_native_scale Logical, default \code{TRUE}. If \code{TRUE}, the
@@ -111,11 +118,10 @@
 #'   is used as the final local output scale instead of \code{target_scale_m}.
 #'   Download from Earth Engine always happens at the native resolution
 #'   regardless of this argument; this only affects local resampling.
-#' @param valid_values_threshold Numeric in \code{[0, 1]}. Minimum proportion of
-#'   non-NA cells required per plot/phase for that combination to be flagged
-#'   \code{Valid = TRUE} in the returned \code{Validation} table.
-#' @param download_route Passed to \code{rgee::ee_as_rast()}, e.g.
-#'   \code{"drive"} or \code{"gcs"}.
+#' @param min_output_cells Integer, default 5. Minimum number of local output
+#'   cells required across the smallest dimension of each region, used to
+#'   automatically refine \code{target_scale_m}/native scale locally when the
+#'   region is too small for the requested scale.
 #' @param region_buffer_m Numeric buffer, in meters, applied to each region
 #'   polygon when building the Earth Engine download extent. If smaller than
 #'   one native pixel, it is automatically raised to the native pixel size so
@@ -133,14 +139,9 @@
 #'   downloaded raster values after \code{division_scale} is applied.
 #' @param interpolate_bands Logical. If \code{TRUE}, small pockets of NA
 #'   cells are filled with a 3x3 focal mean.
-#' @param max_pixels Passed to \code{rgee::ee_as_rast()} as \code{maxPixels}.
-#' @param clean_drive Logical, default \code{TRUE}. If \code{TRUE} and
-#'   \code{download_route == "drive"}, calls
-#'   \code{rgee::ee_clean_container()} after each region's download.
-#' @param min_output_cells Integer, default 5. Minimum number of local output
-#'   cells required across the smallest dimension of each region, used to
-#'   automatically refine \code{target_scale_m}/native scale locally when the
-#'   region is too small for the requested scale.
+#' @param valid_values_threshold Numeric in \code{[0, 1]}. Minimum proportion of
+#'   non-NA cells required per plot/phase for that combination to be flagged
+#'   \code{Valid = TRUE} in the returned \code{Validation} table.
 #' @param mask Optional \code{ee$Image} used to mask out pixels before
 #'   download. Build it however you like outside the function -- e.g. chain
 #'   \code{$neq()}/\code{$And()} conditions on a land-cover collection such
@@ -150,6 +151,12 @@
 #'   extent internally and applied via \code{updateMask()}, so a single
 #'   mask is automatically adapted to every region in \code{shapefiles}. If
 #'   \code{NULL} (default), no mask is applied.
+#' @param download_route Passed to \code{rgee::ee_as_rast()}, e.g.
+#'   \code{"drive"} or \code{"gcs"}.
+#' @param max_pixels Passed to \code{rgee::ee_as_rast()} as \code{maxPixels}.
+#' @param clean_drive Logical, default \code{TRUE}. If \code{TRUE} and
+#'   \code{download_route == "drive"}, calls
+#'   \code{rgee::ee_clean_container()} after each region's download.
 #' @param save_raster Logical, default \code{FALSE}. If \code{TRUE}, the
 #'   final processed raster for each region -- the same object returned in
 #'   \code{$Raster}, i.e. the version right before it is turned into a
@@ -157,43 +164,36 @@
 #' @param raster_output_path Optional character path to a folder where
 #'   rasters are saved when \code{save_raster = TRUE}. If \code{NULL}
 #'   (default), a \code{"raster_outputs"} folder is created inside the
-#'   current working directory. Each file is named with the region and a
-#'   timestamp so repeated runs, or multiple regions in the same run, never
-#'   overwrite each other.
-#' @param batch_size Optional integer. Only relevant when
-#'   \code{summarize_raster = FALSE} (individual images are downloaded
-#'   rather than a single temporally-reduced image per phase). When a
-#'   phase's image count exceeds \code{batch_size}, images are grouped into
-#'   smaller Earth Engine download requests instead of one large combined
-#'   request, and the results are stitched back together locally. See
-#'   Details ("Memory usage with many images").
-#' @param save_data Logical, default \code{FALSE}. If \code{TRUE}, the final
-#'   per-region \code{Data} tibble -- the same object returned in
-#'   \code{$Data} -- is written to disk as a \code{.csv} file.
-#' @param data_output_path Optional character path to a folder where
-#'   \code{Data} tibbles are saved when \code{save_data = TRUE}. If
-#'   \code{NULL} (default), a \code{"data_outputs"} folder is created inside
-#'   the current working directory. Each file is named with the region and
-#'   a date so repeated runs, or multiple regions in the same run, never
-#'   overwrite each other.
-#' @param save_imagecount Logical, default \code{FALSE}. If \code{TRUE}, the
-#'   final per-region \code{ImageCount} tibble -- the same object returned
-#'   in \code{$ImageCount} -- is written to disk as a \code{.csv} file.
-#' @param imagecount_output_path Optional character path to a folder where
-#'   \code{ImageCount} tibbles are saved when \code{save_imagecount = TRUE}.
-#'   If \code{NULL} (default), an \code{"imagecount_outputs"} folder is
-#'   created inside the current working directory. Each file is named with
-#'   the region and a date so repeated runs, or multiple regions in the
-#'   same run, never overwrite each other.
-#' @param save_validation Logical, default \code{FALSE}. If \code{TRUE}, the
-#'   final per-region \code{Validation} tibble -- the same object returned
-#'   in \code{$Validation} -- is written to disk as a \code{.csv} file.
-#' @param validation_output_path Optional character path to a folder where
-#'   \code{Validation} tibbles are saved when \code{save_validation = TRUE}.
-#'   If \code{NULL} (default), a \code{"validation_outputs"} folder is
-#'   created inside the current working directory. Each file is named with
-#'   the region and a date so repeated runs, or multiple regions in the
-#'   same run, never overwrite each other.
+#'   current working directory. Each file is named with the region, a date
+#'   and a random suffix -- the same suffix shared with \code{Data},
+#'   \code{ImageCount} and \code{Validation} for that region/run, see
+#'   \code{save_data} -- so repeated runs, or multiple regions in the same
+#'   run, never overwrite each other.
+#' @param save_data Character vector, default \code{"none"}. Controls
+#'   whether -- and in which format(s) -- the final per-region \code{Data},
+#'   \code{ImageCount} and \code{Validation} tibbles (the same objects
+#'   returned in \code{$Data}, \code{$ImageCount} and \code{$Validation})
+#'   are written to disk. One or more of:
+#'   \itemize{
+#'     \item \code{"none"}: nothing is saved. Ignored (with a warning) if
+#'     combined with any other format.
+#'     \item \code{"qs"}: saved with \code{qs2::qs_save()}.
+#'     \item \code{"parquet"}: saved with \code{arrow::write_parquet()}.
+#'     \item \code{"csv"}: saved with \code{readr::write_csv()}.
+#'     \item \code{"xlsx"}: saved with \code{writexl::write_xlsx()}.
+#'   }
+#'   Multiple formats can be requested at once, e.g.
+#'   \code{save_data = c("xlsx", "qs")}, and all of them are written. Each
+#'   tibble gets its own subfolder inside \code{data_output_path}, and each
+#'   format its own subfolder inside that (e.g. \code{"Data/QS"},
+#'   \code{"ImageCount/CSV"}, \code{"Validation/XLSX"}), created
+#'   automatically as needed.
+#' @param data_output_path Optional character path to the base folder used
+#'   when \code{save_data} requests at least one format. If \code{NULL}
+#'   (default), the current working directory is used as the base -- e.g.
+#'   \code{save_data = "qs"} creates \code{"Data/QS"}, \code{"ImageCount/QS"}
+#'   and \code{"Validation/QS"} inside it. If set to a path, those same
+#'   per-tibble/per-format subfolders are created inside that path instead.
 #'
 #' @return A named list, one entry per region in \code{shapefiles}, each
 #'   containing:
@@ -266,25 +266,23 @@
 #'       vis_df           = vis_df,
 #'       phases_df        = phases_df,
 #'       summarize_raster = FALSE,   # per-image indices -> needed for batch_size
+#'       batch_size       = 5,       # download 5 images per EE request at a time
 #'       mask             = exclusion_mask,
 #'       save_raster      = TRUE,
 #'       raster_output_path = "outputs/s2_2023_2024/rasters",
-#'       batch_size       = 5,       # download 5 images per EE request at a time
-#'       save_data        = TRUE,
-#'       data_output_path = "outputs/s2_2023_2024/data",
-#'       save_imagecount  = TRUE,
-#'       imagecount_output_path = "outputs/s2_2023_2024/image_count",
-#'       save_validation  = TRUE,
-#'       validation_output_path = "outputs/s2_2023_2024/validation"
+#'       save_data        = c("xlsx", "qs"), # write both formats at once
+#'       data_output_path = "outputs/s2_2023_2024/data"
 #'     )
 #'
 #'   # Per-plot/per-phase summary statistics
 #'   result$FarmA$Data
 #'
 #'   # Rasters, Data, ImageCount, and Validation were also written to disk,
-#'   # one file per region, each named with the region and today's date,
-#'   # e.g. "raster_FarmA_2026_07_20_0417.tif" /
-#'   # "data_FarmA_2026_07_20_0417.csv"
+#'   # one file per region, sharing a single random suffix per region so
+#'   # files from the same run can be matched up, e.g.
+#'   # "outputs/s2_2023_2024/rasters/raster_FarmA_2026_07_20_0417.tif"
+#'   # "outputs/s2_2023_2024/data/Data/XLSX/data_FarmA_2026_07_20_0417.xlsx"
+#'   # "outputs/s2_2023_2024/data/Data/QS/data_FarmA_2026_07_20_0417.qs"
 #'   list.files("outputs/s2_2023_2024", recursive = TRUE)
 #' }
 #'
@@ -297,10 +295,10 @@ get_temporal_vi_data <-
     phases_df = NULL,
     mean_or_median = "mean",
     summarize_raster = TRUE,
+    batch_size = NULL,
     target_scale_m = 5L,
     use_native_scale = TRUE,
-    valid_values_threshold = 0.1,
-    download_route = "drive",
+    min_output_cells = 5,
     region_buffer_m = NULL,
     buffer_from_native_scale = FALSE,
     crs = "EPSG:32723",
@@ -308,20 +306,42 @@ get_temporal_vi_data <-
     division_scale = NULL,
     addition_scale = NULL,
     interpolate_bands = FALSE,
+    valid_values_threshold = 0.1,
+    mask = NULL,
+    download_route = "drive",
     max_pixels = 1e12,
     clean_drive = TRUE,
-    min_output_cells = 5,
-    mask = NULL,
     save_raster = FALSE,
     raster_output_path = NULL,
-    batch_size = NULL,
-    save_data = FALSE,
-    data_output_path = NULL,
-    save_imagecount = FALSE,
-    imagecount_output_path = NULL,
-    save_validation = FALSE,
-    validation_output_path = NULL
+    save_data = "none",
+    data_output_path = NULL
   ) {
+
+
+    valid_save_formats <- c("none", "qs", "parquet", "csv", "xlsx")
+
+    if (!all(save_data %in% valid_save_formats)) {
+
+      stop(
+        "save_data must be one or more of: ",
+        paste(valid_save_formats, collapse = ", "), "."
+      )
+
+    }
+
+    if (length(save_data) > 1 && "none" %in% save_data) {
+
+      save_data <- setdiff(save_data, "none")
+
+      warning(
+        "\"none\" was included in save_data together with other formats; ",
+        "it will be ignored. Data will be saved as: ",
+        paste(save_data, collapse = ", "), "."
+      )
+
+    }
+
+    save_formats <- unique(save_data[save_data != "none"])
 
 
     is_image_collection <-
@@ -1118,6 +1138,13 @@ get_temporal_vi_data <-
         raster <- c(plot_ids_base, raster)
 
 
+        # One random suffix per region/iteration, shared by the raster and
+        # by Data/ImageCount/Validation below, so every file produced in
+        # this iteration carries a matching identity while still never
+        # overwriting files from other regions or other runs.
+        run_suffix <- sprintf("%04d", sample.int(9999, 1))
+
+
         if (save_raster) {
 
           output_dir <-
@@ -1137,16 +1164,13 @@ get_temporal_vi_data <-
 
           }
 
-          # Region name + date + a random suffix guarantee a unique
-          # filename across regions and across repeated runs of the
-          # function, so earlier saved rasters are never overwritten.
           raster_filename <-
             file.path(
               output_dir,
               paste0(
                 "raster_", region, "_",
                 format(Sys.Date(), "%Y_%m_%d"), "_",
-                sprintf("%04d", sample.int(9999, 1)),
+                run_suffix,
                 ".tif"
               )
             )
@@ -1502,141 +1526,13 @@ get_temporal_vi_data <-
         gc()
 
 
-        if (save_data) {
+        if (length(save_formats) > 0) {
 
-          output_dir <-
-            if (is.null(data_output_path)) {
+          data_base_dir <- if (is.null(data_output_path)) getwd() else data_output_path
 
-              file.path(getwd(), "data_outputs")
-
-            } else {
-
-              data_output_path
-
-            }
-
-          if (!dir.exists(output_dir)) {
-
-            dir.create(output_dir, recursive = TRUE)
-
-          }
-
-          data_filename <-
-            file.path(
-              output_dir,
-              paste0(
-                "data_", region, "_",
-                format(Sys.Date(), "%Y_%m_%d"), "_",
-                sprintf("%04d", sample.int(9999, 1)),
-                ".csv"
-              )
-            )
-
-          tryCatch(
-            {
-              utils::write.csv(Data, data_filename, row.names = FALSE)
-              message("Region '", region, "': Data saved to ", data_filename)
-            },
-            error = function(e) {
-              message(
-                "Error saving Data for ", region, ": ", e$message
-              )
-            }
-          )
-
-        }
-
-
-        if (save_imagecount) {
-
-          output_dir <-
-            if (is.null(imagecount_output_path)) {
-
-              file.path(getwd(), "imagecount_outputs")
-
-            } else {
-
-              imagecount_output_path
-
-            }
-
-          if (!dir.exists(output_dir)) {
-
-            dir.create(output_dir, recursive = TRUE)
-
-          }
-
-          imagecount_filename <-
-            file.path(
-              output_dir,
-              paste0(
-                "imagecount_", region, "_",
-                format(Sys.Date(), "%Y_%m_%d"), "_",
-                sprintf("%04d", sample.int(9999, 1)),
-                ".csv"
-              )
-            )
-
-          tryCatch(
-            {
-              utils::write.csv(ImageCount, imagecount_filename, row.names = FALSE)
-              message(
-                "Region '", region, "': ImageCount saved to ", imagecount_filename
-              )
-            },
-            error = function(e) {
-              message(
-                "Error saving ImageCount for ", region, ": ", e$message
-              )
-            }
-          )
-
-        }
-
-
-        if (save_validation) {
-
-          output_dir <-
-            if (is.null(validation_output_path)) {
-
-              file.path(getwd(), "validation_outputs")
-
-            } else {
-
-              validation_output_path
-
-            }
-
-          if (!dir.exists(output_dir)) {
-
-            dir.create(output_dir, recursive = TRUE)
-
-          }
-
-          validation_filename <-
-            file.path(
-              output_dir,
-              paste0(
-                "validation_", region, "_",
-                format(Sys.Date(), "%Y_%m_%d"), "_",
-                sprintf("%04d", sample.int(9999, 1)),
-                ".csv"
-              )
-            )
-
-          tryCatch(
-            {
-              utils::write.csv(Validation, validation_filename, row.names = FALSE)
-              message(
-                "Region '", region, "': Validation saved to ", validation_filename
-              )
-            },
-            error = function(e) {
-              message(
-                "Error saving Validation for ", region, ": ", e$message
-              )
-            }
-          )
+          save_tibble_formats(Data, "Data", data_base_dir, region, save_formats, run_suffix)
+          save_tibble_formats(ImageCount, "ImageCount", data_base_dir, region, save_formats, run_suffix)
+          save_tibble_formats(Validation, "Validation", data_base_dir, region, save_formats, run_suffix)
 
         }
 
@@ -1655,3 +1551,70 @@ get_temporal_vi_data <-
 
 
   }
+
+
+# Writes a single tibble (Data, ImageCount or Validation) to disk in one or
+# more formats. Each format gets its own subfolder (e.g. "Data/QS",
+# "Data/CSV") inside base_dir, created on demand. `suffix` is the per-region
+# random tag shared with the raster and the other two tibbles saved in the
+# same iteration, so all files from one region/run can be matched up.
+save_tibble_formats <- function(obj, obj_label, base_dir, region, formats, suffix) {
+
+  ext_map <- c(qs = "qs", parquet = "parquet", csv = "csv", xlsx = "xlsx")
+
+  for (fmt in formats) {
+
+    format_dir <- file.path(base_dir, obj_label, toupper(fmt))
+
+    if (!dir.exists(format_dir)) {
+
+      dir.create(format_dir, recursive = TRUE)
+
+    }
+
+    filename <-
+      file.path(
+        format_dir,
+        paste0(
+          tolower(obj_label), "_", region, "_",
+          format(Sys.Date(), "%Y_%m_%d"), "_", suffix, ".", ext_map[[fmt]]
+        )
+      )
+
+    tryCatch(
+      {
+        switch(
+          fmt,
+          qs = {
+            rlang::check_installed("qs2")
+            qs2::qs_save(obj, filename)
+          },
+          parquet = {
+            rlang::check_installed("arrow")
+            arrow::write_parquet(obj, filename)
+          },
+          csv = {
+            rlang::check_installed("readr")
+            readr::write_csv(obj, filename)
+          },
+          xlsx = {
+            rlang::check_installed("writexl")
+            writexl::write_xlsx(obj, filename)
+          }
+        )
+
+        message(
+          "Region '", region, "': ", obj_label, " saved to ", filename
+        )
+      },
+      error = function(e) {
+        message(
+          "Error saving ", obj_label, " (", fmt, ") for ", region, ": ",
+          e$message
+        )
+      }
+    )
+
+  }
+
+}
