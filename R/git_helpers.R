@@ -552,27 +552,201 @@ git_setup_ssh_config <- function(accounts, bind_global = TRUE) {
   invisible(config_file)
 }
 
+#' Get Fetch and Push URLs for a Git Remote
+#'
+#' @description
+#' Reports a remote's fetch and push URLs \emph{separately}, since Git allows
+#' a remote to have a push URL that silently diverges from its fetch URL
+#' (\code{git remote set-url --push}). That divergence is an easy-to-miss
+#' cause of pushes failing or using the wrong protocol even when
+#' \code{git remote -v} at a glance "looks fine" and authentication itself
+#' succeeds -- e.g. SSH authenticates correctly but the push still targets a
+#' stale HTTPS URL because only the fetch URL was ever updated.
+#'
+#' @param remote Character. Remote name to inspect. Default \code{"origin"}.
+#' @return Invisibly returns a list with \code{remote}, \code{fetch_url},
+#'   \code{push_url}, \code{fetch_is_https}, \code{push_is_https}, and
+#'   \code{urls_diverge} (\code{TRUE} if a push URL was configured separately
+#'   from the fetch URL, whether or not the two differ in protocol).
+#' @seealso \code{\link{git_convert_to_ssh}}, \code{\link{git_status_check}}
+#' @export
+git_remote_urls <- function(remote = "origin") {
+  fetch_url <- suppressWarnings(tryCatch(
+    system2("git", c("remote", "get-url", remote), stdout = TRUE, stderr = FALSE),
+    error = function(e) character(0)
+  ))
+  fetch_url <- fetch_url[nzchar(fetch_url)]
+
+  if (length(fetch_url) == 0) {
+    stop(sprintf(
+      "Could not retrieve a URL for remote '%s'. Are you inside a Git repository, and does this remote exist?",
+      remote
+    ), call. = FALSE)
+  }
+
+  push_url <- suppressWarnings(tryCatch(
+    system2("git", c("remote", "get-url", "--push", remote), stdout = TRUE, stderr = FALSE),
+    error = function(e) character(0)
+  ))
+  push_url <- push_url[nzchar(push_url)]
+  if (length(push_url) == 0) {
+    push_url <- fetch_url
+  }
+
+  list(
+    remote         = remote,
+    fetch_url      = fetch_url[1],
+    push_url       = push_url[1],
+    fetch_is_https = grepl("^https?://", fetch_url[1]),
+    push_is_https  = grepl("^https?://", push_url[1]),
+    urls_diverge   = !identical(fetch_url[1], push_url[1])
+  )
+}
+
+#' Convert a Git Remote from HTTPS to SSH
+#'
+#' @description
+#' Detects whether a remote's fetch and/or push URL (see
+#' \code{\link{git_remote_urls}}) is using HTTPS, and if so, rewrites it to
+#' the equivalent SSH URL via \code{git remote set-url}. HTTPS remotes are
+#' the most common cause of pushes failing with errors like "repository not
+#' found" once a cached HTTPS credential/token is no longer valid, since this
+#' package's other \code{git_*} helpers authenticate exclusively through SSH
+#' (see \code{\link{git_ssh_env}}).
+#'
+#' If the remote's push URL was configured separately from its fetch URL
+#' (see \code{urls_diverge} in \code{\link{git_remote_urls}}), both are
+#' aligned to SSH, since a stale push-only URL is otherwise invisible until
+#' the next push fails.
+#'
+#' @param remote Character. Remote name to convert. Default \code{"origin"}.
+#' @param ssh_alias Character or \code{NULL}. An SSH \code{Host} alias
+#'   configured in \code{~/.ssh/config} (e.g. \code{"github.com-work"}, see
+#'   \code{\link{git_setup_ssh_config}}) to route through instead of the
+#'   remote's real host. When \code{NULL} (default), the real host extracted
+#'   from the existing HTTPS URL is kept, which is correct for single-account
+#'   setups using the default SSH identity.
+#' @param quiet Logical. If \code{TRUE}, suppresses the informational
+#'   message printed when the remote is already SSH on both URLs (messages
+#'   describing an actual conversion are always printed). Default
+#'   \code{FALSE}.
+#' @return Invisibly returns the result of \code{\link{git_remote_urls}}
+#'   after any conversion.
+#' @seealso \code{\link{git_remote_urls}}, \code{\link{git_status_check}},
+#'   \code{\link{git_set_ssh_account}}
+#' @export
+#'
+#' @examples
+#' \dontrun{
+#' git_convert_to_ssh()
+#' git_convert_to_ssh(ssh_alias = "github.com-work")
+#' }
+git_convert_to_ssh <- function(remote = "origin", ssh_alias = NULL, quiet = FALSE) {
+  urls <- git_remote_urls(remote)
+
+  if (!urls$fetch_is_https && !urls$push_is_https) {
+    if (!quiet) {
+      message(sprintf("[OK] Remote '%s' is already using SSH for both fetch and push.", remote))
+    }
+    return(invisible(urls))
+  }
+
+  extract_host <- function(url) sub("^https?://([^/]+)/.*$", "\\1", url)
+
+  message(sprintf("- Remote '%s' is using HTTPS (fetch: %s).", remote, urls$fetch_url))
+  message(
+    "- Converting it to SSH: this package's pull/push/clone helpers authenticate ",
+    "via SSH keys (see git_ssh_env()), so an HTTPS remote will keep failing once ",
+    "any cached HTTPS credential/token stops working."
+  )
+
+  if (urls$fetch_is_https) {
+    new_fetch <- git_build_ssh_url(urls$fetch_url, host = extract_host(urls$fetch_url), ssh_alias = ssh_alias)
+    result <- system2("git", c("remote", "set-url", remote, new_fetch))
+    if (result != 0) {
+      stop(sprintf("Failed to set fetch URL for remote '%s' to '%s'.", remote, new_fetch), call. = FALSE)
+    }
+    message(sprintf("- Fetch URL set to: %s", new_fetch))
+  }
+
+  if (urls$push_is_https || urls$urls_diverge) {
+    base_push_url <- if (urls$push_is_https) urls$push_url else urls$fetch_url
+    new_push <- git_build_ssh_url(base_push_url, host = extract_host(base_push_url), ssh_alias = ssh_alias)
+    result <- system2("git", c("remote", "set-url", "--push", remote, new_push))
+    if (result != 0) {
+      stop(sprintf("Failed to set push URL for remote '%s' to '%s'.", remote, new_push), call. = FALSE)
+    }
+    if (urls$urls_diverge) {
+      message(sprintf(
+        "- NOTE: remote '%s' had a push URL configured separately from its fetch URL -- ",
+        remote
+      ), sprintf("a common, easy-to-miss cause of pushes silently using the wrong URL. Aligned it to: %s", new_push))
+    } else {
+      message(sprintf("- Push URL set to: %s", new_push))
+    }
+  }
+
+  message(
+    "- Recommendation: keep this remote on SSH going forward. Use git_clone() or ",
+    "git_set_ssh_account() for multi-account routing, and check_ssh_setup() any ",
+    "time authentication looks wrong."
+  )
+
+  invisible(git_remote_urls(remote))
+}
+
+# Internal helper shared by the network-facing git_*_with_local_id() /
+# git_*_force_remote() functions: best-effort HTTPS->SSH auto-fix that never
+# aborts the calling function if it can't run (e.g. remote not found yet).
+.git_maybe_convert_to_ssh <- function(auto_ssh) {
+  if (!isTRUE(auto_ssh)) {
+    return(invisible(NULL))
+  }
+  tryCatch(
+    git_convert_to_ssh(quiet = TRUE),
+    error = function(e) {
+      message(sprintf("- Skipped automatic HTTPS->SSH remote check (%s).", conditionMessage(e)))
+      invisible(NULL)
+    }
+  )
+}
+
 #' Check Git Remote Status and Identify Account Routing
 #'
-#' @return Invisibly returns the remote origin URL string.
+#' Reports the fetch (and, if configured separately, push) URL for a remote
+#' via \code{\link{git_remote_urls}}, and warns if HTTPS is in use anywhere,
+#' pointing at \code{\link{git_convert_to_ssh}} as the fix.
+#'
+#' @param remote Character. Remote name to inspect. Default \code{"origin"}.
+#' @return Invisibly returns the result of \code{\link{git_remote_urls}}.
+#' @seealso \code{\link{git_convert_to_ssh}}, \code{\link{git_remote_urls}}
 #' @export
-git_status_check <- function() {
-  url <- tryCatch(
-    system("git config --get remote.origin.url", intern = TRUE),
-    error = function(e)
-      NULL
-  )
-  if (length(url) == 0 || identical(url, "")) {
-    stop("Could not retrieve 'origin' remote URL. Are you inside a Git repository?")
+git_status_check <- function(remote = "origin") {
+  urls <- git_remote_urls(remote)
+
+  message(sprintf("- Remote '%s' fetch URL: %s", remote, urls$fetch_url))
+  if (urls$urls_diverge) {
+    message(sprintf("- Remote '%s' push URL (configured separately!): %s", remote, urls$push_url))
   }
-  message(sprintf("- Remote Origin URL: %s", url))
-  if (grepl("^git@", url)) {
-    host_alias <- sub("^git@([^:]+):.*$", "\\1", url)
+
+  if (!urls$fetch_is_https && !urls$push_is_https) {
+    host_alias <- sub("^git@([^:]+):.*$", "\\1", urls$fetch_url)
     message(sprintf("- SSH connection active via Host Alias: %s", host_alias))
   } else {
-    warning("This repository is using HTTPS. Switch to SSH using git_set_ssh_account().")
+    which_url <- if (urls$fetch_is_https && urls$push_is_https) {
+      "both fetch and push"
+    } else if (urls$fetch_is_https) {
+      "fetch"
+    } else {
+      "push"
+    }
+    warning(sprintf(
+      "This repository is using HTTPS for %s. Run git_convert_to_ssh() to switch it to SSH automatically, or git_set_ssh_account() to route through a specific multi-account alias.",
+      which_url
+    ), call. = FALSE)
   }
-  invisible(url)
+
+  invisible(urls)
 }
 
 #' Pull Remote Changes Safely via Active SSH Routing
@@ -585,9 +759,15 @@ git_status_check <- function() {
 #' cloud-synced folder).
 #'
 #' @param branch Character. The target branch name. If NULL, automatically detects the current branch.
+#' @param auto_ssh Logical. If \code{TRUE} (default), runs
+#'   \code{\link{git_convert_to_ssh}} first and converts the remote away from
+#'   HTTPS automatically if needed (see \code{\link{git_convert_to_ssh}} for
+#'   why HTTPS remotes are incompatible with this function's SSH-based
+#'   authentication). Set to \code{FALSE} to skip this check.
 #' @return Invisibly returns the system execution result code.
 #' @export
-git_pull_with_local_id <- function(branch = NULL) {
+git_pull_with_local_id <- function(branch = NULL, auto_ssh = TRUE) {
+  .git_maybe_convert_to_ssh(auto_ssh)
   if (is.null(branch)) {
     branch <- tryCatch(
       system("git rev-parse --abbrev-ref HEAD", intern = TRUE),
@@ -620,9 +800,15 @@ git_pull_with_local_id <- function(branch = NULL) {
 #' matters more than it might seem.
 #'
 #' @param branch Character. The target branch name. If NULL, automatically detects the current branch.
+#' @param auto_ssh Logical. If \code{TRUE} (default), runs
+#'   \code{\link{git_convert_to_ssh}} first and converts the remote away from
+#'   HTTPS automatically if needed (see \code{\link{git_convert_to_ssh}} for
+#'   why HTTPS remotes are incompatible with this function's SSH-based
+#'   authentication). Set to \code{FALSE} to skip this check.
 #' @return Invisibly returns the system execution result code.
 #' @export
-git_push_with_local_id <- function(branch = NULL) {
+git_push_with_local_id <- function(branch = NULL, auto_ssh = TRUE) {
+  .git_maybe_convert_to_ssh(auto_ssh)
   if (is.null(branch)) {
     branch <- tryCatch(
       system("git rev-parse --abbrev-ref HEAD", intern = TRUE),
@@ -683,6 +869,149 @@ git_set_ssh_account <- function(account_name, project_name, owner = NULL) {
   invisible(result)
 }
 
+#' List Git Stash Entries
+#'
+#' Thin wrapper around \code{git stash list}, so stash recovery does not
+#' require dropping into a shell. Used internally by
+#' \code{\link{git_pull_force_remote}} and mentioned in its recovery message.
+#'
+#' @return Invisibly returns a character vector of stash entries (may be
+#'   empty). Also prints them via \code{message()}.
+#' @seealso \code{\link{git_stash_save}}, \code{\link{git_stash_pop}}
+#' @export
+#'
+#' @examples
+#' \dontrun{
+#' git_stash_list()
+#' }
+git_stash_list <- function() {
+  entries <- suppressWarnings(tryCatch(
+    system2("git", c("stash", "list"), stdout = TRUE, stderr = TRUE),
+    error = function(e) character(0)
+  ))
+  entries <- entries[nzchar(entries)]
+
+  if (length(entries) == 0) {
+    message("- No stash entries found.")
+  } else {
+    message(sprintf(
+      "- %d stash entr%s found:",
+      length(entries),
+      if (length(entries) == 1) "y" else "ies"
+    ))
+    for (e in entries) {
+      message(sprintf("    %s", e))
+    }
+  }
+
+  invisible(entries)
+}
+
+#' Save (Stash) Uncommitted Local Changes
+#'
+#' Wrapper around \code{git stash push}, used internally as the safety-net
+#' step of \code{\link{git_pull_force_remote}} before a hard reset. Cleanly
+#' no-ops (with a message, no error) when there is nothing to stash, so it is
+#' safe to call unconditionally.
+#'
+#' @param message_text Character or \code{NULL}. Description recorded with
+#'   the stash entry. When \code{NULL} (default), a timestamped message is
+#'   generated automatically.
+#' @param include_untracked Logical. If \code{TRUE} (default), passes
+#'   \code{-u} so untracked files are stashed too, not just modifications to
+#'   already-tracked files.
+#' @return Invisibly returns \code{TRUE} if a stash entry was created, or
+#'   \code{FALSE} if there was nothing to stash.
+#' @seealso \code{\link{git_stash_list}}, \code{\link{git_stash_pop}}
+#' @export
+#'
+#' @examples
+#' \dontrun{
+#' git_stash_save("wip: refactor before pulling")
+#' }
+git_stash_save <- function(message_text = NULL, include_untracked = TRUE) {
+  status_output <- suppressWarnings(tryCatch(
+    system2("git", c("status", "--porcelain"), stdout = TRUE, stderr = TRUE),
+    error = function(e) character(0)
+  ))
+  status_output <- status_output[nzchar(status_output)]
+
+  if (length(status_output) == 0) {
+    message("- No uncommitted changes detected. Nothing to stash.")
+    return(invisible(FALSE))
+  }
+
+  if (is.null(message_text)) {
+    message_text <- sprintf(
+      "Backup created by git_stash_save() on %s",
+      format(Sys.time(), "%Y-%m-%d %H:%M:%S")
+    )
+  }
+
+  # NOTE: built as a single shQuote()-d string run via system(), not
+  # system2("git", c(...)) with the message as a separate vector element.
+  # Git for Windows' git.exe is an MSYS-built binary that re-splits its own
+  # command line using POSIX-style quoting; system2()'s Windows argv passing
+  # does not add the quotes MSYS expects around a multi-word element, so a
+  # message containing a space (e.g. "test stash") silently arrives as two
+  # separate arguments -- git then either misinterprets the extra word as a
+  # pathspec or, worse, reports "No local changes to save" despite real
+  # changes being present. Routing through system()/shQuote() (as Git Bash
+  # itself would) keeps the quoting intact end to end.
+  cmd_parts <- c("git", "stash", "push")
+  if (isTRUE(include_untracked)) {
+    cmd_parts <- c(cmd_parts, "-u")
+  }
+  cmd_parts <- c(cmd_parts, "-m", shQuote(message_text))
+
+  result <- system(paste(cmd_parts, collapse = " "))
+  if (result == 0) {
+    message(sprintf(
+      "[SUCCESS] Stash created: \"%s\". Use git_stash_list() to view it, or git_stash_pop() to restore it.",
+      message_text
+    ))
+  } else {
+    stop("[ERROR] Failed to create stash backup.", call. = FALSE)
+  }
+
+  invisible(TRUE)
+}
+
+#' Restore (Pop) a Stashed Set of Changes
+#'
+#' Wrapper around \code{git stash pop}. Mentioned as the recovery step after
+#' \code{\link{git_pull_force_remote}} discards local changes into a stash
+#' via \code{\link{git_stash_save}}.
+#'
+#' @param stash_ref Character. Which stash entry to restore, in \code{git
+#'   stash} reference syntax. Default \code{"stash@{0}"}, the most recently
+#'   created entry. Use \code{\link{git_stash_list}} to find other entries.
+#' @return Invisibly returns the integer exit status of \code{git stash pop}
+#'   (\code{0} on success).
+#' @seealso \code{\link{git_stash_list}}, \code{\link{git_stash_save}}
+#' @export
+#'
+#' @examples
+#' \dontrun{
+#' git_stash_pop()
+#' git_stash_pop("stash@{1}")
+#' }
+git_stash_pop <- function(stash_ref = "stash@{0}") {
+  result <- system2("git", c("stash", "pop", stash_ref))
+  if (result == 0) {
+    message(sprintf("[SUCCESS] Restored stash '%s'.", stash_ref))
+  } else {
+    stop(
+      sprintf(
+        "[ERROR] Failed to pop stash '%s'. It may not exist (see git_stash_list()), or restoring it may have produced merge conflicts that need manual resolution.",
+        stash_ref
+      ),
+      call. = FALSE
+    )
+  }
+  invisible(result)
+}
+
 #' Force local branch to match remote (hard reset)
 #'
 #' @description
@@ -708,18 +1037,18 @@ git_set_ssh_account <- function(account_name, project_name, owner = NULL) {
 #'   \item Runs \code{git fetch origin} to update remote-tracking references
 #'     without touching local files.
 #'   \item If \code{stash_backup = TRUE} and uncommitted changes are present,
-#'     runs \code{git stash push} with a timestamped message to back them up
-#'     before proceeding.
+#'     calls \code{\link{git_stash_save}} with a timestamped message to back
+#'     them up before proceeding.
 #'   \item Runs \code{git reset --hard origin/<branch>} to move the local
 #'     branch pointer and working directory to match the remote exactly.
 #' }
 #'
 #' If \code{stash_backup = TRUE}, discarded local changes are not permanently
-#' lost: they can be recovered later by running \code{git stash list} to find
-#' the relevant entry and \code{git stash pop} (or \code{git stash apply}) to
-#' restore it. Note that a stash pop/apply performed after the reset may itself
-#' produce merge conflicts if the stashed changes overlap with the new remote
-#' content; this is expected and should be resolved manually.
+#' lost: they can be recovered later with \code{\link{git_stash_list}} to
+#' find the relevant entry and \code{\link{git_stash_pop}} to restore it.
+#' Note that popping a stash after the reset may itself produce merge
+#' conflicts if the stashed changes overlap with the new remote content;
+#' this is expected and should be resolved manually.
 #'
 #' If a step fails due to SSH authentication issues (e.g. "Permission denied
 #' (publickey)" or "no such identity"), run \code{\link{check_ssh_setup}} to
@@ -741,6 +1070,9 @@ git_set_ssh_account <- function(account_name, project_name, owner = NULL) {
 #'   the discarded changes remain recoverable from the stash list (see
 #'   \code{Details}) instead of being permanently lost. Set to \code{FALSE}
 #'   to skip this safeguard and discard local changes immediately.
+#' @param auto_ssh Logical. If \code{TRUE} (default), runs
+#'   \code{\link{git_convert_to_ssh}} first and converts the remote away from
+#'   HTTPS automatically if needed. Set to \code{FALSE} to skip this check.
 #'
 #' @return Invisibly returns the integer exit status of the \code{git reset}
 #'   command (\code{0} on success), or \code{FALSE} if the operation was
@@ -763,14 +1095,16 @@ git_set_ssh_account <- function(account_name, project_name, owner = NULL) {
 #' git_pull_force_remote(stash_backup = FALSE)
 #'
 #' # Recovering a stash backup later, if needed:
-#' # git stash list
-#' # git stash pop stash@{0}
+#' git_stash_list()
+#' git_stash_pop()
 #' }
 #'
 #' @export
 git_pull_force_remote <- function(branch = NULL,
                                   confirm = TRUE,
-                                  stash_backup = TRUE) {
+                                  stash_backup = TRUE,
+                                  auto_ssh = TRUE) {
+  .git_maybe_convert_to_ssh(auto_ssh)
   if (is.null(branch)) {
     branch <- tryCatch(
       system("git rev-parse --abbrev-ref HEAD", intern = TRUE),
@@ -819,26 +1153,11 @@ git_pull_force_remote <- function(branch = NULL,
   }
 
   if (stash_backup) {
-    status_output <- tryCatch(
-      system("git status --porcelain", intern = TRUE),
-      error = function(e)
-        character(0)
-    )
-    if (length(status_output) > 0) {
-      timestamp <- format(Sys.time(), "%Y-%m-%d %H:%M:%S")
-      stash_message <- sprintf("Backup before force reset on branch '%s' (%s)",
-                               branch,
-                               timestamp)
-      message("- Uncommitted changes detected. Creating stash backup...")
-      stash_result <- system(sprintf("git stash push -u -m %s", shQuote(stash_message)))
-      if (stash_result == 0) {
-        message("- Stash backup created successfully. Use 'git stash list' to view it.")
-      } else {
-        stop("[ERROR] Failed to create stash backup. Aborting before reset to avoid data loss.")
-      }
-    } else {
-      message("- No uncommitted changes detected. Skipping stash backup.")
-    }
+    timestamp <- format(Sys.time(), "%Y-%m-%d %H:%M:%S")
+    stash_message <- sprintf("Backup before force reset on branch '%s' (%s)",
+                             branch,
+                             timestamp)
+    git_stash_save(stash_message)
   }
 
   message(sprintf(
@@ -849,7 +1168,7 @@ git_pull_force_remote <- function(branch = NULL,
   if (reset_result == 0) {
     message("[SUCCESS] Local files now match origin exactly.")
     if (stash_backup) {
-      message("- If needed, recover discarded changes with: git stash list / git stash pop")
+      message("- If needed, recover discarded changes: git_stash_list() to find the entry, then git_stash_pop() to restore it.")
     }
   } else {
     stop(
@@ -939,6 +1258,9 @@ git_pull_force_remote <- function(branch = NULL,
 #'   current commit before it is overwritten, so the discarded history stays
 #'   locally reachable (e.g. \code{git checkout backup/main-2026-07-18-...}).
 #'   This tag is created locally only; it is not pushed to the remote.
+#' @param auto_ssh Logical. If \code{TRUE} (default), runs
+#'   \code{\link{git_convert_to_ssh}} first and converts the remote away from
+#'   HTTPS automatically if needed. Set to \code{FALSE} to skip this check.
 #'
 #' @return Invisibly returns the integer exit status of the \code{git push}
 #'   command (\code{0} on success), or \code{FALSE} if the operation was
@@ -971,7 +1293,9 @@ git_pull_force_remote <- function(branch = NULL,
 git_push_force_remote <- function(branch = NULL,
                                   confirm = TRUE,
                                   use_lease = TRUE,
-                                  backup_tag = TRUE) {
+                                  backup_tag = TRUE,
+                                  auto_ssh = TRUE) {
+  .git_maybe_convert_to_ssh(auto_ssh)
   if (is.null(branch)) {
     branch <- tryCatch(
       system("git rev-parse --abbrev-ref HEAD", intern = TRUE),

@@ -4,7 +4,12 @@
 \alias{git_pull_force_remote}
 \title{Force local branch to match remote (hard reset)}
 \usage{
-git_pull_force_remote(branch = NULL, confirm = TRUE, stash_backup = TRUE)
+git_pull_force_remote(
+  branch = NULL,
+  confirm = TRUE,
+  stash_backup = TRUE,
+  auto_ssh = TRUE
+)
 }
 \arguments{
 \item{branch}{Character. Name of the branch to reset. If \code{NULL}
@@ -23,6 +28,10 @@ message before the hard reset is executed. This provides a safety net:
 the discarded changes remain recoverable from the stash list (see
 \code{Details}) instead of being permanently lost. Set to \code{FALSE}
 to skip this safeguard and discard local changes immediately.}
+
+\item{auto_ssh}{Logical. If \code{TRUE} (default), runs
+\code{\link{git_convert_to_ssh}} first and converts the remote away from
+HTTPS automatically if needed. Set to \code{FALSE} to skip this check.}
 }
 \value{
 Invisibly returns the integer exit status of the \code{git reset}
@@ -52,18 +61,18 @@ The function performs the following steps:
 \item Runs \code{git fetch origin} to update remote-tracking references
 without touching local files.
 \item If \code{stash_backup = TRUE} and uncommitted changes are present,
-runs \code{git stash push} with a timestamped message to back them up
-before proceeding.
+calls \code{\link{git_stash_save}} with a timestamped message to back
+them up before proceeding.
 \item Runs \code{git reset --hard origin/<branch>} to move the local
 branch pointer and working directory to match the remote exactly.
 }
 
 If \code{stash_backup = TRUE}, discarded local changes are not permanently
-lost: they can be recovered later by running \code{git stash list} to find
-the relevant entry and \code{git stash pop} (or \code{git stash apply}) to
-restore it. Note that a stash pop/apply performed after the reset may itself
-produce merge conflicts if the stashed changes overlap with the new remote
-content; this is expected and should be resolved manually.
+lost: they can be recovered later with \code{\link{git_stash_list}} to
+find the relevant entry and \code{\link{git_stash_pop}} to restore it.
+Note that popping a stash after the reset may itself produce merge
+conflicts if the stashed changes overlap with the new remote content;
+this is expected and should be resolved manually.
 
 If a step fails due to SSH authentication issues (e.g. "Permission denied
 (publickey)" or "no such identity"), run \code{\link{check_ssh_setup}} to
@@ -84,8 +93,8 @@ git_pull_force_remote(branch = "main", confirm = FALSE)
 git_pull_force_remote(stash_backup = FALSE)
 
 # Recovering a stash backup later, if needed:
-# git stash list
-# git stash pop stash@{0}
+git_stash_list()
+git_stash_pop()
 }
 
 }

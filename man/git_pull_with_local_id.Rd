@@ -4,10 +4,16 @@
 \alias{git_pull_with_local_id}
 \title{Pull Remote Changes Safely via Active SSH Routing}
 \usage{
-git_pull_with_local_id(branch = NULL)
+git_pull_with_local_id(branch = NULL, auto_ssh = TRUE)
 }
 \arguments{
 \item{branch}{Character. The target branch name. If NULL, automatically detects the current branch.}
+
+\item{auto_ssh}{Logical. If \code{TRUE} (default), runs
+\code{\link{git_convert_to_ssh}} first and converts the remote away from
+HTTPS automatically if needed (see \code{\link{git_convert_to_ssh}} for
+why HTTPS remotes are incompatible with this function's SSH-based
+authentication). Set to \code{FALSE} to skip this check.}
 }
 \value{
 Invisibly returns the system execution result code.

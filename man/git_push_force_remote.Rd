@@ -8,7 +8,8 @@ git_push_force_remote(
   branch = NULL,
   confirm = TRUE,
   use_lease = TRUE,
-  backup_tag = TRUE
+  backup_tag = TRUE,
+  auto_ssh = TRUE
 )
 }
 \arguments{
@@ -35,6 +36,10 @@ named \code{backup/<branch>-<timestamp>} pointing at the remote's
 current commit before it is overwritten, so the discarded history stays
 locally reachable (e.g. \code{git checkout backup/main-2026-07-18-...}).
 This tag is created locally only; it is not pushed to the remote.}
+
+\item{auto_ssh}{Logical. If \code{TRUE} (default), runs
+\code{\link{git_convert_to_ssh}} first and converts the remote away from
+HTTPS automatically if needed. Set to \code{FALSE} to skip this check.}
 }
 \value{
 Invisibly returns the integer exit status of the \code{git push}

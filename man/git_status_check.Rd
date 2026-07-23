@@ -4,11 +4,19 @@
 \alias{git_status_check}
 \title{Check Git Remote Status and Identify Account Routing}
 \usage{
-git_status_check()
+git_status_check(remote = "origin")
+}
+\arguments{
+\item{remote}{Character. Remote name to inspect. Default \code{"origin"}.}
 }
 \value{
-Invisibly returns the remote origin URL string.
+Invisibly returns the result of \code{\link{git_remote_urls}}.
 }
 \description{
-Check Git Remote Status and Identify Account Routing
+Reports the fetch (and, if configured separately, push) URL for a remote
+via \code{\link{git_remote_urls}}, and warns if HTTPS is in use anywhere,
+pointing at \code{\link{git_convert_to_ssh}} as the fix.
+}
+\seealso{
+\code{\link{git_convert_to_ssh}}, \code{\link{git_remote_urls}}
 }
