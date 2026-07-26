@@ -277,7 +277,7 @@
 #'   # shapefiles <- list(FarmA = sf_farm_a, FarmB = sf_farm_b)
 #'
 #'   result <-
-#'     get_temporal_vi_data(
+#'     get_gee_data(
 #'       shapefiles       = shapefiles,
 #'       asset_bands_ic   = s2_ic,
 #'       vis_df           = vis_df,
@@ -304,7 +304,7 @@
 #' }
 #'
 #' @export
-get_temporal_vi_data <-
+get_gee_data <-
   function(
     shapefiles,
     asset_bands_ic,
@@ -1656,5 +1656,891 @@ save_tibble_formats <- function(obj, obj_label, base_dir, region, formats, suffi
     )
 
   }
+
+}
+
+
+
+# Get local raster data (drones, satellite scenes, saved GEE rasters) -----
+
+
+#' Extract bands and vegetation indices from local raster files over polygon
+#' regions
+#'
+#' Reads one or more raster files (GeoTIFF or anything \code{terra::rast()}
+#' accepts) per region from subfolders of \code{base_dir}, and returns
+#' per-plot summary statistics (mean, median, sd, max, min) for their bands
+#' and, optionally, vegetation indices computed from those bands.
+#'
+#' @details
+#' \strong{Folder layout}
+#'
+#' \code{base_dir} must contain one subfolder per region, and each
+#' subfolder's name must contain the corresponding name from
+#' \code{names(shapefiles)} (matched with \code{grepl()}, same convention
+#' \code{\link{get_gee_data}} uses for \code{names(shapefiles)}). Every
+#' \code{.tif} file directly inside a region's subfolder is treated as one
+#' raster "snapshot" for that region -- this is what originally supported
+#' drone surveys split across several flights (several files, one per
+#' flight/date, in the same region folder), but a folder with a single file
+#' (a satellite scene, a Planet composite, or a raster saved by
+#' \code{\link{get_gee_data}} via \code{save_raster = TRUE}) works exactly
+#' the same way, just with one snapshot instead of several.
+#'
+#' \strong{Matching \code{bands} to the raster's actual layers}
+#'
+#' \code{bands} is a named character vector: names are the generic band
+#' symbols used in \code{vis_df$Equation} and recognized by
+#' \code{\link{extract_required_bands}} (\code{R}, \code{G}, \code{B},
+#' \code{NIR}, \code{SWIR}, \code{SWIR1}, \code{SWIR2}, \code{RE},
+#' \code{RE1}-\code{RE4}), values are however that band is identified in the
+#' source file. \code{band_match} controls how that mapping is applied to
+#' each file:
+#' \itemize{
+#'   \item \code{"name"}: the file's layers already carry real names (a
+#'   satellite scene, a Planet product, or a raster saved by
+#'   \code{get_gee_data}) -- layers whose current name equals one of
+#'   \code{bands}' values are renamed to the matching generic symbol; every
+#'   other layer is left untouched.
+#'   \item \code{"position"}: the file's layers carry no meaningful names
+#'   (a typical drone GeoTIFF) -- the first \code{length(bands)} layers are
+#'   assigned \code{names(bands)}, in order. If the file has fewer layers
+#'   than \code{bands}, only that many are assigned (with a warning); if it
+#'   has more, the extra layers keep whatever name \code{terra} gave them.
+#'   \item \code{"auto"} (default): tries \code{"name"} first (checking
+#'   whether any of \code{bands}' values already appears among the file's
+#'   layer names); if none match, falls back to \code{"position"}. This
+#'   preserves the original drone behavior (unnamed layers) while taking
+#'   advantage of real names when the file already has them.
+#' }
+#'
+#' \strong{Bands vs. auxiliary layers}
+#'
+#' Only layers that end up matched to one of \code{bands}' generic symbols
+#' are treated as "computable": only those are divided/added via
+#' \code{division_scale}/\code{addition_scale}, and only those are checked
+#' against \code{vis_df} to decide which indices can be computed. Every
+#' other layer in the file (a land-cover classification, an already-computed
+#' index, an \code{id}/\code{Plot} layer coming from a raster saved by
+#' \code{get_gee_data}, etc.) is carried through untouched and simply
+#' appears in the final table as its own column -- there is no need to
+#' declare it separately.
+#'
+#' \strong{Extracting bands without computing indices}
+#'
+#' \code{vis_df} is optional. If \code{NULL} (the default), no vegetation
+#' index is computed -- the function only extracts/renames bands (and
+#' passes through auxiliary layers) and summarizes them per plot. This is
+#' useful for files that don't carry every band a given index needs, or
+#' when only the raw bands are wanted.
+#'
+#' \strong{Buffer: positive (dilate) or negative (erode)}
+#'
+#' \code{buffer_dist} accepts any real number: positive values dilate each
+#' plot polygon outward (the original behavior, e.g. to make sure a template
+#' raster covers slightly beyond the plot), negative values erode it inward
+#' (e.g. to move sample pixels away from a plot's edge and avoid mixed
+#' pixels from a neighboring plot). \code{0}/\code{NULL} applies no buffer.
+#' When \code{resolution_based_buffer = TRUE}, the buffer magnitude is
+#' derived from the raster's own pixel size, but its sign still follows
+#' \code{buffer_dist} if one was supplied (e.g. \code{buffer_dist = -1} with
+#' \code{resolution_based_buffer = TRUE} eats inward by one pixel), and
+#' defaults to dilating outward otherwise. Whichever direction is used, any
+#' geometry that becomes empty or invalid after buffering is dropped (with a
+#' warning naming its \code{id_column} value) rather than silently breaking
+#' rasterization/cropping downstream -- this is the "clear rule" negative
+#' buffers need: erosion is allowed, but it can never make a plot vanish
+#' without telling you.
+#'
+#' @param base_dir Path to the base directory containing one subfolder per
+#'   region.
+#' @param shapefiles A named list of \code{sf} objects, one per region;
+#'   names must match (via \code{grepl()}) a subfolder of \code{base_dir}.
+#' @param vis_df Optional \code{data.frame} with columns \code{Index} and
+#'   \code{Equation} describing vegetation indices to compute (see
+#'   \code{\link{calc_vis_4}}). If \code{NULL} (default), only bands and any
+#'   auxiliary layers are extracted and summarized.
+#' @param bands Named character vector mapping generic band symbols (names)
+#'   to how that band is identified in the source raster (values) -- see
+#'   Details.
+#' @param band_match One of \code{"auto"} (default), \code{"position"} or
+#'   \code{"name"} -- see Details.
+#' @param crs Target coordinate reference system, e.g. \code{"EPSG:32723"}.
+#' @param projection_method Resampling method passed to \code{terra::project()}.
+#' @param division_scale Optional numeric scalar or vector (length 1 or
+#'   \code{length(available bands)}) used to divide the computable bands
+#'   (e.g. to convert digital numbers to reflectance).
+#' @param addition_scale Optional numeric scalar or vector (same length
+#'   rules as \code{division_scale}) added to the computable bands after
+#'   \code{division_scale} is applied.
+#' @param buffer_dist Optional numeric buffer distance, in the units of
+#'   \code{crs}. Positive dilates, negative erodes -- see Details.
+#' @param resolution_based_buffer Logical, default \code{FALSE}. If
+#'   \code{TRUE}, the buffer magnitude is derived from the raster's pixel
+#'   size instead of a fixed \code{buffer_dist} -- see Details.
+#' @param interpolate_bands Logical. If \code{TRUE}, small pockets of NA
+#'   cells are filled with a 3x3 focal mean.
+#' @param filename_pattern Regular expression with two capture groups (date,
+#'   phase) used to parse each file's name via
+#'   \code{\link{extract_date_and_phase}}. Defaults to the drone convention
+#'   \code{"Date_DD_MM_YY_Phase_..."}. Files whose name doesn't match get
+#'   \code{Date = NA} / \code{Phase = "All"}, with a warning, instead of
+#'   failing -- this is what lets a single satellite scene (with an
+#'   arbitrary filename) be processed like any other file.
+#' @param export_geotiff Logical, default \code{TRUE}. If \code{TRUE}, the
+#'   processed raster for each file (bands renamed/scaled, reprojected,
+#'   cropped, masked, with the rasterized plot IDs attached) is written to
+#'   \code{base_dir/GeoTIFF/<region>/}.
+#' @param id_column Character, name of the plot ID column in each element of
+#'   \code{shapefiles}. Created automatically (as sequential integers) if
+#'   missing.
+#' @param invalid_value Numeric, value treated as invalid data (besides NA)
+#'   when checking raster coverage -- passed to
+#'   \code{\link{find_non_covered_areas}}.
+#' @param threshold Numeric in \code{[0, 1]}, maximum proportion of
+#'   invalid/NA cells a plot may have before it is dropped for a given file
+#'   -- passed to \code{\link{find_non_covered_areas}}.
+#' @param per_layer Logical, passed to \code{\link{find_non_covered_areas}}.
+#' @param verbose Logical, whether to print progress/diagnostic messages.
+#'
+#' @return A named list, one entry per region in \code{shapefiles}, each a
+#'   \code{tibble} with per-plot, per-date, per-phase summary statistics for
+#'   every numeric band, auxiliary layer, and vegetation index.
+#'
+#' @examples
+#' \dontrun{
+#'   vis_df <- data.frame(
+#'     Index = c("NDVI", "GNDVI"),
+#'     Equation = c("(NIR - R) / (NIR + R)", "(NIR - G) / (NIR + G)")
+#'   )
+#'
+#'   # shapefiles is a named list of sf polygons, one per region/farm, each
+#'   # with an "id" column identifying individual plots. base_dir has one
+#'   # subfolder per region name, each containing one or more .tif files.
+#'   # shapefiles <- list(FarmA = sf_farm_a, FarmB = sf_farm_b)
+#'
+#'   result <-
+#'     get_raster_data(
+#'       base_dir = "drone_flights",
+#'       shapefiles = shapefiles,
+#'       vis_df = vis_df,
+#'       bands = c(R = "R", G = "G", B = "B", RE = "RE", NIR = "NIR"),
+#'       buffer_dist = -0.5 # erode 0.5 m inward, away from plot edges
+#'     )
+#'
+#'   result$FarmA
+#' }
+#'
+#' @export
+get_raster_data <- function(base_dir,
+                             shapefiles,
+                             vis_df = NULL,
+                             bands = c(
+                               R = "R",
+                               G = "G",
+                               B = "B",
+                               RE = "RE",
+                               NIR = "NIR",
+                               Panchromatic = "Panchromatic"
+                             ),
+                             band_match = c("auto", "position", "name"),
+                             crs = "EPSG:32723",
+                             projection_method = "bilinear",
+                             division_scale = NULL,
+                             addition_scale = NULL,
+                             buffer_dist = NULL,
+                             resolution_based_buffer = FALSE,
+                             interpolate_bands = FALSE,
+                             filename_pattern = "Date_(\\d{2}_\\d{2}_\\d{2})_([A-Za-z0-9]+)_",
+                             export_geotiff = TRUE,
+                             id_column = "id",
+                             invalid_value = 0,
+                             threshold = 0.1,
+                             per_layer = TRUE,
+                             verbose = TRUE) {
+
+
+  band_match <- match.arg(band_match)
+
+
+  log_message <- function(..., level = "info") {
+    if (verbose && (level == "info" || level == "warning"))
+      message(...)
+  }
+
+
+  # Which generic bands are required by vis_df (if any), and which of the
+  # declared `bands` can satisfy them -- mirrors get_gee_data's handling of
+  # sat_bands/required_bands, but driven by the user-supplied `bands` param
+  # instead of a fixed per-satellite lookup table.
+  if (!is.null(vis_df) && nrow(vis_df) > 0) {
+
+    required_bands_for_vis <- extract_required_bands(vis_df$Equation)
+
+    log_message(
+      "Required bands to compute VIs: ",
+      paste(required_bands_for_vis, collapse = ", "),
+      "."
+    )
+
+    available_bands <- bands[names(bands) %in% required_bands_for_vis]
+
+    missing_bands <- required_bands_for_vis[!required_bands_for_vis %in% names(bands)]
+
+    if (length(missing_bands) > 0) {
+
+      log_message(
+        "Warning: the following bands required by vis_df are not declared in `bands`: ",
+        paste(missing_bands, collapse = ", "),
+        ".",
+        level = "warning"
+      )
+
+      lines_new_vis_df <- !grepl(paste(missing_bands, collapse = "|"), vis_df$Equation)
+
+      log_message(
+        "Excluding indices requiring missing bands: ",
+        paste(vis_df$Index[!lines_new_vis_df], collapse = ", "),
+        "."
+      )
+
+      vis_df <- vis_df[lines_new_vis_df, ]
+
+    }
+
+  } else {
+
+    # No vis_df: every declared band is "computable" (division_scale /
+    # addition_scale eligible), there just aren't any indices to compute.
+    available_bands <- bands
+
+  }
+
+
+  # List all folders in base_dir
+  folders <- list.dirs(base_dir, recursive = FALSE, full.names = TRUE) |>
+    stringr::str_subset("GeoTIFF$", negate = TRUE)
+
+
+  folders_basenames <- basename(folders)
+
+
+  split_folders_basenames <- folders_basenames |>
+    stringr::str_split("-", simplify = FALSE) |>
+    unlist()
+
+
+  shapefile_names <- names(shapefiles)
+
+
+  valid_shapefile_names <- base::intersect(shapefile_names, split_folders_basenames)
+
+
+  if (length(valid_shapefile_names) < length(shapefile_names)) {
+
+
+    log_message(
+      "A reduced set of shapefiles corresponds to the subfolders within the base directory.\n",
+      "Only the shapefiles that match these subfolders are included in the process.\n",
+      paste0("Valid shapefiles are: ", paste(valid_shapefile_names, collapse = ", "), ".")
+    )
+
+
+    shapefiles <- shapefiles[valid_shapefile_names]
+
+
+  }
+
+
+  shapefiles <- purrr::map(shapefiles, \(shp) {
+    if (any(duplicated(sf::st_geometry(shp)))) {
+
+      log_message("Removed ",
+                  sum(duplicated(sf::st_geometry(shp))),
+                  " duplicate geometries in shapefile for ",
+                  paste(names(shp), collapse = ", "), ".")
+
+      shp[!duplicated(sf::st_geometry(shp)), ]
+
+    } else {
+
+      shp
+
+    }
+  })
+
+
+
+  # Process each region
+  results <- shapefiles |>
+    purrr::imap(\(shp, region_name) {
+
+
+      folder_path <- folders[grepl(region_name, basename(folders))]
+
+
+      if (length(folder_path) == 0) {
+
+        log_message("No folder found for region: ", region_name, ".", level = "warning")
+
+        return(NULL)
+
+      }
+
+
+      log_message("Processing folder: ", folder_path, ".")
+
+
+      # Reproject shapefile
+      region_sf_reproj <- tryCatch(
+
+        sf::st_transform(shp, crs),
+
+        error = function(e) {
+
+          log_message("Shapefile reprojection failed for ",
+                      region_name,
+                      ": ",
+                      e$message,
+                      level = "warning")
+
+          return(NULL)
+
+        }
+
+      )
+
+
+      if (is.null(region_sf_reproj))  {
+
+        return(NULL)
+
+      }
+
+
+      # Add ID column if missing
+      if (!id_column %in% names(region_sf_reproj)) {
+
+        log_message(
+          "No '",
+          id_column,
+          "' column found in shapefile for ",
+          region_name,
+          ". Assigning default IDs."
+        )
+
+        region_sf_reproj[[id_column]] <- seq_len(nrow(region_sf_reproj))
+
+      }
+
+
+      # List raster files
+      tif_files <- list.files(folder_path, pattern = "\\.tif$", full.names = TRUE)
+
+
+      if (length(tif_files) == 0) {
+
+        log_message("No TIFF files found for region: ", region_name, ".", level = "warning")
+
+        return(NULL)
+
+      }
+
+
+      # Process each raster file (one flight/scene/snapshot each)
+      date_rasters <-
+        tif_files |>
+        purrr::map(
+          \(tif_file) {
+
+
+            tif <- terra::rast(tif_file)
+
+
+            non_covered_areas <- find_non_covered_areas(
+              shp = region_sf_reproj,
+              tif = tif,
+              id_column = id_column,
+              invalid_value = invalid_value,
+              threshold = threshold,
+              verbose = verbose,
+              per_layer = per_layer
+            )
+
+
+            if (length(non_covered_areas) > 0) {
+
+              log_message(
+                "Removing ",
+                length(non_covered_areas),
+                paste0(
+                  " geometries not fully covered by TIFF: ",
+                  paste(non_covered_areas, collapse = ", "), "."
+                )
+              )
+
+              region_sf_reproj <- region_sf_reproj |>
+                dplyr::filter(!(!!rlang::sym(id_column)) %in% non_covered_areas)
+
+            }
+
+
+            # Create a template raster with same resolution as input
+            input_res <- terra::res(tif)
+
+
+            template_rast <-
+              terra::rast(
+                extent = terra::ext(region_sf_reproj),
+                resolution = input_res,
+                crs = crs
+              )
+
+
+            log_message(
+              "Template raster extent for region ",
+              region_name,
+              ": ",
+              paste(terra::ext(template_rast)[], collapse = ", "),
+              "."
+            )
+
+
+            log_message(
+              "Template raster dimensions for region ",
+              region_name,
+              ": ",
+              paste(dim(template_rast), collapse = " x "),
+              "."
+            )
+
+
+            # Apply buffer -- sign comes from buffer_dist (positive dilates,
+            # negative erodes); resolution_based_buffer only controls the
+            # magnitude, not the direction. See Details for the full rule.
+            effective_buffer <-
+              if (resolution_based_buffer) {
+
+                buffer_sign <- if (!is.null(buffer_dist) && buffer_dist < 0) -1 else 1
+
+                if (input_res[1] < 0.1) 0 else buffer_sign * input_res[1]
+
+              } else {
+
+                buffer_dist %||% 0
+
+              }
+
+
+            region_sf_buffered <-
+              if (effective_buffer != 0) {
+
+                buffered <- sf::st_buffer(region_sf_reproj, dist = effective_buffer)
+
+                empty_or_invalid <- sf::st_is_empty(buffered) | !sf::st_is_valid(buffered)
+
+                if (any(empty_or_invalid)) {
+
+                  log_message(
+                    sum(empty_or_invalid),
+                    " geometries became empty or invalid after a buffer of ",
+                    effective_buffer,
+                    " units and were dropped for region ",
+                    region_name,
+                    ": ",
+                    paste(buffered[[id_column]][empty_or_invalid], collapse = ", "),
+                    ".",
+                    level = "warning"
+                  )
+
+                  buffered <- buffered[!empty_or_invalid, ]
+
+                }
+
+                buffered
+
+              } else {
+
+                region_sf_reproj
+
+              }
+
+
+            log_message(if (effective_buffer > 0) {
+
+              paste0("Applied a dilating buffer of ",
+                     effective_buffer,
+                     " units for region: ",
+                     region_name, ".")
+
+            } else if (effective_buffer < 0) {
+
+              paste0("Applied an eroding buffer of ",
+                     effective_buffer,
+                     " units for region: ",
+                     region_name, ".")
+
+            } else {
+
+              paste0("No buffer applied for region: ", region_name, ".")
+
+            })
+
+
+            # Rasterize plot IDs
+            plot_ids_base <- terra::rasterize(
+              region_sf_buffered,
+              template_rast,
+              field = id_column,
+              fun = "min",
+              background = NA
+            )
+
+
+            names(plot_ids_base) <- "plot_id"
+
+
+            na_proportion <- mean(is.na(terra::values(plot_ids_base)))
+
+
+            if (na_proportion > 0.05) {
+
+              plot_ids_base <- terra::focal(
+                plot_ids_base,
+                w = 3,
+                fun = "min",
+                na.rm = TRUE,
+                na.policy = "only"
+              )
+
+              log_message(
+                "Applied focal to fill ",
+                round(na_proportion * 100, 2),
+                "% NA pixels in plot_ids_base."
+              )
+
+            } else {
+
+              log_message(
+                "Skipped focal operation; NA proportion (",
+                round(na_proportion * 100, 2),
+                "%) is low."
+              )
+
+            }
+
+
+            # Match `bands` to this file's actual layers (see Details for
+            # the "auto"/"position"/"name" rule), renaming only the layers
+            # that are identified -- everything else keeps its original
+            # name and rides along as an auxiliary/passthrough layer.
+            raster_names <- terra::names(tif)
+
+            match_mode <-
+              if (band_match == "auto") {
+                if (any(bands %in% raster_names)) "name" else "position"
+              } else {
+                band_match
+              }
+
+            if (match_mode == "name") {
+
+              matched_bands <- bands[bands %in% raster_names]
+
+              if (length(matched_bands) > 0) {
+
+                idx <- match(matched_bands, raster_names)
+                raster_names[idx] <- names(matched_bands)
+                terra::names(tif) <- raster_names
+
+              }
+
+              if (length(matched_bands) < length(bands)) {
+
+                log_message(
+                  "Warning: could not match by name the following declared bands in ",
+                  basename(tif_file),
+                  ": ",
+                  paste(names(bands)[!names(bands) %in% names(matched_bands)], collapse = ", "),
+                  ".",
+                  level = "warning"
+                )
+
+              }
+
+            } else {
+
+              num_bands <- terra::nlyr(tif)
+
+              if (num_bands < length(bands)) {
+
+                log_message(
+                  "Warning: ",
+                  basename(tif_file),
+                  " has ",
+                  num_bands,
+                  " bands; expected ",
+                  length(bands),
+                  " (",
+                  paste(names(bands), collapse = ", "),
+                  ").",
+                  level = "warning"
+                )
+
+                raster_names[seq_len(num_bands)] <- names(bands)[seq_len(num_bands)]
+
+              } else {
+
+                raster_names[seq_len(length(bands))] <- names(bands)
+
+              }
+
+              terra::names(tif) <- raster_names
+
+            }
+
+
+            # Apply division_scale / addition_scale -- computable bands
+            # only (auxiliary layers are left untouched).
+            avail_syms <- intersect(names(available_bands), terra::names(tif))
+
+            if (length(avail_syms) > 0) {
+
+              if (!is.null(division_scale) && all(division_scale > 0)) {
+
+                if (length(division_scale) == 1 ||
+                    length(division_scale) == length(avail_syms)) {
+
+                  tif[[avail_syms]] <- tif[[avail_syms]] / division_scale
+
+                } else {
+
+                  log_message(
+                    "division_scale must have length 1 or ",
+                    length(avail_syms),
+                    "; skipping it for ",
+                    basename(tif_file),
+                    ".",
+                    level = "warning"
+                  )
+
+                }
+
+              }
+
+              if (!is.null(addition_scale)) {
+
+                if (length(addition_scale) == 1 ||
+                    length(addition_scale) == length(avail_syms)) {
+
+                  tif[[avail_syms]] <- tif[[avail_syms]] + addition_scale
+
+                } else {
+
+                  log_message(
+                    "addition_scale must have length 1 or ",
+                    length(avail_syms),
+                    "; skipping it for ",
+                    basename(tif_file),
+                    ".",
+                    level = "warning"
+                  )
+
+                }
+
+              }
+
+            }
+
+
+            # Recover date/phase from the filename; fall back instead of
+            # failing when it doesn't match filename_pattern (e.g. an
+            # arbitrarily-named satellite scene).
+            parsed_date_phase <- extract_date_and_phase(basename(tif_file), pattern = filename_pattern)
+
+            if (is.na(parsed_date_phase$date) || is.na(parsed_date_phase$phase)) {
+
+              log_message(
+                "Filename '",
+                basename(tif_file),
+                "' did not match filename_pattern; using Date = NA / Phase = 'All' for this file.",
+                level = "warning"
+              )
+
+            }
+
+            date_str <- parsed_date_phase$date %||% "NA"
+            phase_str <- parsed_date_phase$phase %||% "All"
+
+
+            # Every layer (bands and auxiliary alike) is tagged with the
+            # same date/phase suffix so the pivot below can recover both,
+            # regardless of layer name -- "@@@" is used instead of "_" as
+            # the separator so layer names and phase labels may freely
+            # contain underscores without corrupting the split.
+            terra::names(tif) <- paste(terra::names(tif), date_str, phase_str, sep = "@@@")
+
+
+            tif <- tryCatch(
+
+              terra::project(tif, template_rast, method = projection_method),
+
+              error = function(e) {
+                log_message("Reprojection failed for ",
+                            basename(tif_file),
+                            ": ",
+                            e$message,
+                            level = "warning")
+                tif
+
+              }
+
+            )
+
+
+            # Crop and mask
+            tif <- terra::crop(tif, region_sf_buffered) |>
+              terra::mask(region_sf_buffered)
+
+
+            # Interpolate bands if requested
+            if (interpolate_bands) {
+
+              na_proportion <- mean(is.na(terra::values(tif)))
+
+              if (na_proportion > 0.01) {
+
+                tif <- terra::focal(
+                  tif,
+                  w = 3,
+                  fun = "mean",
+                  na.rm = TRUE,
+                  na.policy = "only"
+                )
+
+                log_message(
+                  "Interpolated NA values for ",
+                  paste(date_str, phase_str, sep = "@@@"),
+                  " (NA proportion: ",
+                  round(na_proportion, 4),
+                  ")."
+                )
+              }
+
+              tif <- terra::mask(tif, plot_ids_base)
+
+            }
+
+
+            # Combine with plot IDs
+            plot_ids <- plot_ids_base
+
+
+            terra::names(plot_ids) <- paste("plot_id", date_str, phase_str, sep = "@@@")
+
+
+            rast_with_ids <- c(tif, plot_ids)
+
+
+            rast_with_ids
+
+
+          })
+
+
+      if (export_geotiff) {
+
+        dir_path <- fs::path_norm(file.path(base_dir, "GeoTIFF", region_name))
+
+        fs::dir_create(dir_path, recurse = TRUE)
+
+        file_paths <- paste0(dir_path, "/", basename(tif_files))
+
+        date_rasters |>
+          purrr::walk2(file_paths, \(save_file, save_path) {
+            terra::writeRaster(save_file, filename = save_path, overwrite = TRUE)
+          }, .progress = verbose)
+
+      }
+
+
+      # Convert to data frame and compute VIs
+      Data_list <- date_rasters |>
+        purrr::map(\(d) {
+
+          df <- d |>
+            terra::as.data.frame(xy = TRUE) |>
+            tibble::as_tibble() |>
+            dplyr::filter_at(dplyr::vars(tidyselect::starts_with("plot_id")), ~ !is.na(.))
+
+
+          if (!interpolate_bands && length(available_bands) > 0) {
+
+            avail_prefix_regex <-
+              paste0("^(", paste(stringr::str_escape(names(available_bands)), collapse = "|"), ")@@@")
+
+            avail_cols <- names(df)[stringr::str_detect(names(df), avail_prefix_regex)]
+
+            if (length(avail_cols) > 0) {
+
+              df <- df |>
+                dplyr::filter(dplyr::if_all(tidyselect::all_of(avail_cols), ~ !is.na(.)))
+
+            }
+
+          }
+
+          df
+
+        }) |>
+        purrr::map(\(d) {
+
+          out <- d |>
+            tidyr::pivot_longer(
+              cols = !c("x", "y"),
+              names_to = c(".value", "Date", "Phase"),
+              names_sep = "@@@"
+            ) |>
+            dplyr::mutate(
+              Date = dplyr::na_if(Date, "NA"),
+              Date = lubridate::mdy(Date),
+              Phase = forcats::as_factor(Phase),
+              Plot = forcats::as_factor(plot_id)
+            ) |>
+            dplyr::select(-plot_id) |>
+            tibble::add_column(Region = forcats::as_factor(region_name),
+                               .before = "x")
+
+          if (!is.null(vis_df) && nrow(vis_df) > 0) {
+
+            out <- calc_vis_4(out, vis_df)
+
+          }
+
+          out |>
+            dplyr::group_by(Region, Phase, Date, Plot) |>
+            dplyr::summarise(
+              dplyr::across(
+                .cols = tidyselect::where(is.numeric) & -c(x, y),
+                .fns = list(
+                  mean = ~ mean(., na.rm = TRUE),
+                  median = ~ median(., na.rm = TRUE),
+                  sd = ~ sd(., na.rm = TRUE),
+                  max = ~ max(., na.rm = TRUE),
+                  min = ~ min(., na.rm = TRUE)
+                ),
+                .names = "{.col}_{.fn}"
+              ),
+              .groups = "drop"
+            ) |>
+            dplyr::mutate_if(is.numeric, ~ replace(.x, is.infinite(.x) |
+                                                     is.nan(.x), NA))
+        })
+
+      dplyr::bind_rows(Data_list)
+
+    })
+
+  return(results)
 
 }

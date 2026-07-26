@@ -331,6 +331,309 @@ get_available_bands <- function(asset_ic) {
 
 
 
+#' Extract a date and a phase label from a filename
+#'
+#' Matches \code{filename} against \code{pattern} and returns the first two
+#' capture groups as \code{date} and \code{phase}. Used internally by
+#' \code{\link{get_raster_data}} to recover the acquisition date and
+#' phenological phase encoded in each raster file's name.
+#'
+#' @param filename A character scalar, typically \code{basename(tif_file)}.
+#' @param pattern A regular expression with exactly two capture groups: the
+#'   first must match the date portion, the second the phase portion.
+#'   Defaults to the convention \code{"Date_DD_MM_YY_Phase_..."}, e.g.
+#'   \code{"Date_23_10_24_Vegetative_..."}.
+#'
+#' @return A list with elements \code{date} and \code{phase}, both character
+#'   scalars. If \code{filename} does not match \code{pattern}, both elements
+#'   are \code{NA_character_} -- callers decide how to handle that case (see
+#'   \code{\link{get_raster_data}}, which falls back to \code{Date = NA} /
+#'   \code{Phase = "All"} with a warning instead of failing).
+#'
+#' @export
+extract_date_and_phase <-
+  function(filename,
+           pattern = "Date_(\\d{2}_\\d{2}_\\d{2})_([A-Za-z0-9]+)_") {
+
+    m <- stringr::str_match(filename, pattern)
+
+    list(
+      date = if (is.na(m[1, 1])) NA_character_ else m[1, 2],
+      phase = if (is.na(m[1, 1])) NA_character_ else m[1, 3]
+    )
+
+  }
+
+
+
+# Function to find areas in shapefile not covered by TIFF -----------------
+
+
+#' Find shapefile geometries not (fully) covered by a raster
+#'
+#' Identifies which geometries in \code{shp} fall completely outside
+#' \code{tif}'s extent, partially outside it, or intersect it but contain too
+#' high a proportion of invalid/NA cells. Used internally by
+#' \code{\link{get_raster_data}} to drop plots that a given flight/scene does
+#' not usably cover before rasterizing plot IDs and extracting bands.
+#'
+#' @param shp An \code{sf} object with one geometry per plot.
+#' @param tif A \code{SpatRaster} (from \code{terra}) covering the same area
+#'   (partially or fully) as \code{shp}.
+#' @param id_column Character, name of the column in \code{shp} identifying
+#'   each geometry. If missing, row indices are used instead (with a
+#'   warning).
+#' @param invalid_value Numeric, the value treated as invalid data in
+#'   \code{tif} (in addition to \code{NA}), e.g. \code{0} for a raster where
+#'   background/no-data pixels are coded as zero.
+#' @param threshold Numeric in \code{[0, 1]}. Geometries with a proportion of
+#'   invalid/NA cells above this threshold are flagged as not covered.
+#' @param verbose Logical, whether to print progress/diagnostic messages.
+#' @param per_layer Logical. If \code{TRUE}, the invalid-proportion check is
+#'   done independently per raster layer (a geometry is flagged if any single
+#'   layer exceeds \code{threshold}). If \code{FALSE}, invalid cells are
+#'   pooled across all layers before comparing against \code{threshold}.
+#'
+#' @return An integer/character vector (matching the type of
+#'   \code{shp[[id_column]]}) with the IDs of geometries that are either
+#'   completely outside \code{tif}'s extent, partially outside it, or
+#'   intersect it with too many invalid/NA cells.
+#'
+#' @export
+find_non_covered_areas <-
+  function(shp,
+           tif,
+           id_column = "id",
+           invalid_value = 0,
+           threshold = 0.1,
+           verbose = TRUE,
+           per_layer = TRUE) {
+
+    # Step 1: Validate inputs
+    if (!inherits(shp, "sf")) {
+
+      stop("The 'shp' argument must be an 'sf' object.")
+
+    }
+
+    if (!inherits(tif, "SpatRaster")) {
+
+      stop("The 'tif' argument must be a 'SpatRaster' object from the 'terra' package.")
+
+    }
+
+    if (nrow(shp) == 0) {
+
+      stop("Shapefile is empty.")
+
+    }
+
+    if (terra::ncell(tif) == 0) {
+
+      stop("TIFF raster is empty.")
+
+    }
+
+    if (!is.numeric(threshold) || threshold < 0 || threshold > 1) {
+
+      stop("Threshold must be a numeric value between 0 and 1.")
+
+    }
+
+    # Step 2: Validate ID column
+    shp_names <- names(shp)
+
+    if (is.null(shp_names) || length(shp_names) == 0) {
+
+      if (verbose) {
+        warning("Shapefile has no attribute table. Using row indices as IDs.")
+      }
+
+      shp[[id_column]] <- seq_len(nrow(shp))
+
+    } else if (!id_column %in% shp_names) {
+
+      stop(
+        "ID column '",
+        id_column,
+        "' not found in shapefile. Available columns: ",
+        paste(shp_names, collapse = ", ")
+      )
+
+    }
+
+    # Step 3: Ensure CRS match
+    tif_crs <- terra::crs(tif)
+
+    if (sf::st_crs(shp) != sf::st_crs(tif_crs)) {
+
+      if (verbose) {
+
+        cat("Reprojecting shapefile to match TIFF CRS...\n")
+      }
+
+      shp <- sf::st_transform(shp, tif_crs)
+
+    }
+
+    # Step 4: Get TIFF extent as an sf polygon
+    tif_extent <- sf::st_as_sfc(sf::st_bbox(terra::ext(tif), crs = tif_crs))
+
+    # Step 5: Identify geometries outside and partially outside TIFF extent
+    intersects_extent <- sf::st_intersects(shp, tif_extent, sparse = FALSE)[, 1]
+
+    outside_extent <- shp[!intersects_extent, ]
+
+    # Identify partially overlapping geometries
+    intersects_full <- sf::st_within(shp, tif_extent, sparse = FALSE)[, 1]
+
+    partially_outside <- shp[intersects_extent & !intersects_full, ]
+
+
+    outside_ids <- if (nrow(outside_extent) > 0) {
+
+      if (verbose) {
+        cat(
+          nrow(outside_extent),
+          "geometries are completely outside the TIFF extent:",
+          outside_extent[[id_column]],
+          "\n"
+        )
+      }
+
+      outside_extent[[id_column]]
+
+    } else {
+
+      numeric(0)
+
+    }
+
+    partially_outside_ids <- if (nrow(partially_outside) > 0) {
+
+      if (verbose) {
+
+        cat(
+          nrow(partially_outside),
+          "geometries are partially outside the TIFF extent:",
+          partially_outside[[id_column]],
+          "\n"
+        )
+      }
+
+      partially_outside[[id_column]]
+
+    } else {
+
+      numeric(0)
+
+    }
+
+    inside_extent <- shp[intersects_extent, ] |>  # Start with all intersecting
+      dplyr::filter(!(!!rlang::sym(id_column) %in% c(outside_ids, partially_outside_ids)))  # Exclude fully and partially outside
+    # Note: Filtering inside_extent to exclude partially_outside_ids assumes these are not checked for invalid data
+
+    # Step 6: Check for invalid data in intersecting geometries
+    invalid_ids <- numeric(0)
+
+    if (nrow(inside_extent) > 0 && threshold < 1 && threshold > 0) {
+
+      extracted <- terra::extract(
+        tif,
+        terra::vect(inside_extent),
+        fun = NULL,
+        touches = TRUE,
+        ID = TRUE
+      )
+
+      if (per_layer) {
+
+        invalid_summary <- extracted |>
+          dplyr::group_by(ID) |>
+          dplyr::summarise(
+            n_values = dplyr::n(),
+            dplyr::across(
+              .cols = -dplyr::any_of(c("ID")),
+              .fns = ~ sum(is.na(.x) |
+                             .x == invalid_value, na.rm = TRUE),
+              .names = "na_or_invalid_{.col}"
+            )
+          ) |>
+          dplyr::mutate(
+            dplyr::across(
+              tidyselect::starts_with("na_or_invalid_"),
+              ~ .x / n_values,
+              .names = "prop_invalid_{.col}"
+            )
+          ) |>
+          dplyr::filter(dplyr::if_any(
+            tidyselect::starts_with("prop_invalid_"),
+            ~ .x > threshold
+          ))
+
+      } else {
+
+        invalid_summary <- extracted |>
+          dplyr::group_by(ID) |>
+          dplyr::summarise(n_values = dplyr::n(),
+                           na_or_invalid = sum(rowSums(
+                             dplyr::across(
+                               .cols = -dplyr::any_of(c("ID")),
+                               .fns = ~ is.na(.x) |
+                                 .x == invalid_value
+                             ),
+                             na.rm = TRUE
+                           ))) |>
+          dplyr::mutate(prop_invalid = na_or_invalid / n_values) |>
+          dplyr::filter(prop_invalid > threshold)
+
+      }
+
+      invalid_ids <- if (nrow(invalid_summary) > 0) {
+
+        inside_extent[[id_column]][invalid_summary$ID]
+
+      } else {
+
+        numeric(0)
+
+      }
+      if (length(invalid_ids) > 0 && verbose) {
+
+        cat(
+          length(invalid_ids),
+          "geometries intersect the TIFF but contain invalid data above the threshold:",
+          invalid_ids,
+          "\n"
+        )
+
+      }
+
+    }
+
+    # Step 7: Combine IDs of non-covered areas
+    all_non_covered_ids <- sort(unique(c(
+      outside_ids, partially_outside_ids, invalid_ids
+    )))
+
+    # Step 8: Return results
+    if (length(all_non_covered_ids) == 0 && verbose) {
+
+      cat("All shapefile areas are covered by valid TIFF data.\n")
+
+    } else if (verbose) {
+
+      cat(length(all_non_covered_ids),
+          "total geometries not fully covered by TIFF.\n")
+
+    }
+
+    return(all_non_covered_ids)
+
+  }
+
+
+
 #' Calculate vegetation indices from band columns in a data frame
 #'
 #' Evaluates each vegetation index equation in \code{vis_df} against the

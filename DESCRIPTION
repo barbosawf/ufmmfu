@@ -8,10 +8,12 @@ Description: This package contains functions that I created that were very usefu
 License: MIT + file LICENSE
 Encoding: UTF-8
 Roxygen: list(markdown = TRUE)
-Imports: 
+Imports:
     dplyr,
+    fs,
     ggplot2,
     ggpubr,
+    lubridate,
     purrr,
     rlang,
     correlation,
