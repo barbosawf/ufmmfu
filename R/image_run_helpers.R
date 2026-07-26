@@ -674,3 +674,351 @@ calc_vis_4 <- function(df, vis_df) {
   )
 
 }
+
+
+
+# Thresholding algorithms for vegetation segmentation ----------------------
+#
+# The three functions below (otsu_threshold, triangle_threshold,
+# kmeans_threshold) all share the same contract: given a numeric vector of
+# vegetation-index values (e.g. NDVI over one plot), they return a single
+# scalar threshold that best separates two populations in that vector (soil
+# / row-gaps vs. crop canopy). They are the building blocks behind
+# get_raster_data()'s optional `segment_vegetation` feature (see
+# compute_threshold(), the dispatcher used there), but are exported on their
+# own since they are useful any time a bimodal histogram needs splitting in
+# two, not just for vegetation masking.
+#
+# All three fall back to a fixed 0.3 threshold when there isn't enough
+# information to estimate one (fewer than two finite values, a completely
+# flat histogram, etc.) -- 0.3 is a generic, middle-of-the-road NDVI-like
+# value, not a fitted default; callers that need a different fallback should
+# check `length(stats::na.omit(values))` themselves before calling.
+
+
+#' Otsu's thresholding method
+#'
+#' Finds the threshold that maximizes the between-class variance of a
+#' 256-bin histogram of \code{values}, i.e. Otsu's (1979) classic method for
+#' splitting a bimodal distribution in two. This is the default algorithm
+#' used by \code{\link{get_raster_data}}'s \code{segment_vegetation}
+#' feature.
+#'
+#' @param values A numeric vector (e.g. vegetation-index values extracted
+#'   over one plot). \code{NA}s are dropped before computing the threshold.
+#'
+#' @return A numeric scalar: the estimated threshold. Falls back to
+#'   \code{0.3} when \code{values} has fewer than two finite observations or
+#'   the histogram is degenerate (all values identical).
+#'
+#' @export
+otsu_threshold <- function(values) {
+
+  values <- stats::na.omit(values)
+
+  if (length(values) < 2) return(0.3)
+
+  h <- graphics::hist(values, breaks = 256, plot = FALSE)
+
+  counts <- h$counts
+  mids <- h$mids
+
+  total <- sum(counts)
+
+  if (total == 0) return(0.3)
+
+  probs <- counts / total
+
+  max_var <- -Inf
+  threshold <- mids[1]
+
+  for (i in seq_len(length(mids) - 1)) {
+
+    w1 <- sum(probs[1:i])
+    w2 <- 1 - w1
+
+    # A split with an empty side carries no separating information.
+    if (w1 == 0 || w2 == 0) next
+
+    mu1 <- sum(probs[1:i] * mids[1:i]) / w1
+    mu2 <- sum(probs[(i + 1):length(mids)] * mids[(i + 1):length(mids)]) / w2
+
+    var_between <- w1 * w2 * (mu1 - mu2) ^ 2
+
+    if (var_between > max_var) {
+      max_var <- var_between
+      threshold <- mids[i]
+    }
+
+  }
+
+  threshold
+
+}
+
+
+
+#' Triangle thresholding method
+#'
+#' Implements the Triangle algorithm (Zack, Rogers & Latt, 1977): draws a
+#' line from the histogram's peak bin to its farthest non-empty tail, then
+#' picks the bin with the largest perpendicular distance from that line as
+#' the threshold. Unlike Otsu, it does not assume the two populations are
+#' comparably sized, which makes it a useful alternative when the class of
+#' interest (e.g. crop canopy) occupies a small, skewed peak next to a much
+#' larger background peak.
+#'
+#' @inheritParams otsu_threshold
+#'
+#' @return A numeric scalar: the estimated threshold. Falls back to
+#'   \code{0.3} under the same degenerate conditions as
+#'   \code{\link{otsu_threshold}}.
+#'
+#' @export
+triangle_threshold <- function(values) {
+
+  values <- stats::na.omit(values)
+
+  if (length(values) < 2) return(0.3)
+
+  h <- graphics::hist(values, breaks = 256, plot = FALSE)
+
+  counts <- h$counts
+  mids <- h$mids
+
+  peak_idx <- which.max(counts)
+
+  non_empty <- which(counts > 0)
+
+  first_non_empty <- min(non_empty)
+  last_non_empty <- max(non_empty)
+
+  # The line is drawn toward whichever side of the peak has the longer
+  # non-empty tail -- that is the side the Triangle method assumes holds
+  # the (typically smaller/skewed) second population.
+  end_idx <-
+    if ((peak_idx - first_non_empty) >= (last_non_empty - peak_idx)) {
+      first_non_empty
+    } else {
+      last_non_empty
+    }
+
+  if (end_idx == peak_idx) return(mids[peak_idx])
+
+  idx_range <- if (end_idx > peak_idx) peak_idx:end_idx else end_idx:peak_idx
+
+  x1 <- mids[peak_idx]
+  y1 <- counts[peak_idx]
+  x2 <- mids[end_idx]
+  y2 <- counts[end_idx]
+
+  line_len <- sqrt((x2 - x1) ^ 2 + (y2 - y1) ^ 2)
+
+  if (line_len == 0) return(mids[peak_idx])
+
+  # Perpendicular distance from each histogram point (mids[i], counts[i]) to
+  # the peak-to-tail line.
+  dist <-
+    abs((y2 - y1) * mids[idx_range] - (x2 - x1) * counts[idx_range] +
+          x2 * y1 - y2 * x1) / line_len
+
+  mids[idx_range][which.max(dist)]
+
+}
+
+
+
+#' K-means thresholding method
+#'
+#' Splits \code{values} into two clusters with \code{stats::kmeans()} and
+#' returns the midpoint between the two cluster centers as the threshold.
+#' A simple, distribution-free alternative to \code{\link{otsu_threshold}}
+#' and \code{\link{triangle_threshold}} -- it does not rely on a histogram,
+#' so it can behave better with noisy or heavily overlapping populations at
+#' the cost of being less reproducible run to run (\code{kmeans()}'s random
+#' start).
+#'
+#' @inheritParams otsu_threshold
+#'
+#' @return A numeric scalar: the estimated threshold. Falls back to
+#'   \code{0.3} when \code{values} has fewer than two finite/distinct
+#'   observations or \code{stats::kmeans()} fails to converge.
+#'
+#' @export
+kmeans_threshold <- function(values) {
+
+  values <- as.numeric(stats::na.omit(values))
+
+  if (length(values) < 2 || length(unique(values)) < 2) return(0.3)
+
+  km <- tryCatch(
+    stats::kmeans(values, centers = 2, nstart = 5),
+    error = function(e) NULL
+  )
+
+  if (is.null(km)) return(0.3)
+
+  mean(sort(km$centers[, 1]))
+
+}
+
+
+
+#' Dispatch to one of the vegetation-segmentation thresholding methods
+#'
+#' Small convenience wrapper around \code{\link{otsu_threshold}},
+#' \code{\link{triangle_threshold}} and \code{\link{kmeans_threshold}},
+#' selected by name. Used internally by \code{\link{get_raster_data}} so
+#' its \code{threshold_method} argument can pick any of the three with a
+#' single string.
+#'
+#' @inheritParams otsu_threshold
+#' @param method One of \code{"otsu"}, \code{"triangle"} or \code{"kmeans"}.
+#'
+#' @return A numeric scalar: the threshold from the selected method.
+#'
+#' @export
+compute_threshold <- function(values, method = c("otsu", "triangle", "kmeans")) {
+
+  method <- match.arg(method)
+
+  switch(
+    method,
+    otsu = otsu_threshold(values),
+    triangle = triangle_threshold(values),
+    kmeans = kmeans_threshold(values)
+  )
+
+}
+
+
+
+# Arbitrary single-formula raster indices -----------------------------------
+
+
+#' Extract the variable names referenced in an R expression string
+#'
+#' Parses \code{formula} as an R expression and returns every distinct
+#' variable name it references, in the order they first appear. Unlike
+#' \code{\link{extract_required_bands}} (which only recognizes a fixed
+#' vocabulary of remote-sensing band symbols across possibly many
+#' equations), this works for a single, arbitrary expression referencing
+#' any variable name -- used by \code{\link{compute_segmentation_index}} so
+#' \code{get_raster_data}'s \code{segmentation_formula} can reference
+#' whatever band names happen to be available, not just the fixed
+#' \code{R}/\code{G}/\code{B}/\code{NIR}/... set.
+#'
+#' @param formula A character scalar with a valid R expression, e.g.
+#'   \code{"(NIR - R) / (NIR + R)"}.
+#'
+#' @return A character vector of unique variable names referenced in
+#'   \code{formula}.
+#'
+#' @export
+extract_formula_variables <- function(formula) {
+
+  unique(all.vars(parse(text = formula)[[1]]))
+
+}
+
+
+
+#' Compute a single vegetation index directly on a raster
+#'
+#' Evaluates \code{formula} against the layers of \code{r} using ordinary R
+#' arithmetic, relying on \code{terra}'s operator overloading for
+#' \code{SpatRaster} objects to do the actual per-cell computation --
+#' unlike \code{\link{calc_vis_4}} (which needs \code{r} turned into a data
+#' frame first), this stays entirely at the raster level. Used internally
+#' by \code{\link{get_raster_data}} to build the single index it segments
+#' vegetation from from (\code{segmentation_formula}), and useful on its own
+#' whenever a single formula (rather than a whole \code{vis_df} table) needs
+#' to become a raster.
+#'
+#' @param r A \code{SpatRaster} whose layer names include every variable
+#'   referenced in \code{formula}.
+#' @param formula A character scalar with a valid R expression referencing
+#'   \code{names(r)}, e.g. \code{"(NIR - R) / (NIR + R)"}.
+#'
+#' @return A single-layer \code{SpatRaster} named \code{"segmentation_index"},
+#'   with infinite/\code{NaN} cells replaced by \code{NA}.
+#'
+#' @export
+compute_segmentation_index <- function(r, formula) {
+
+  needed_bands <- extract_formula_variables(formula)
+
+  missing_bands <- setdiff(needed_bands, terra::names(r))
+
+  if (length(missing_bands) > 0) {
+
+    stop(
+      "Raster is missing band(s) needed by the segmentation formula: ",
+      paste(missing_bands, collapse = ", "),
+      "."
+    )
+
+  }
+
+  # Binding each needed band to its own single-layer SpatRaster and
+  # eval()-ing the formula in that environment lets R's arithmetic
+  # operators dispatch to terra's SpatRaster methods, so the whole formula
+  # is computed as one vectorized raster operation instead of cell by cell.
+  env <- stats::setNames(lapply(needed_bands, \(b) r[[b]]), needed_bands)
+
+  result <- eval(parse(text = formula)[[1]], envir = env)
+
+  result <- terra::ifel(is.infinite(result) | is.nan(result), NA, result)
+
+  names(result) <- "segmentation_index"
+
+  result
+
+}
+
+
+
+#' Calculate vegetation indices directly on a raster (no data frame step)
+#'
+#' Raster-native counterpart to \code{\link{calc_vis_4}}: computes every
+#' index in \code{vis_df} for each cell of \code{r} via \code{terra::app()},
+#' without ever materializing \code{r} as a data frame. Prefer this over
+#' \code{calc_vis_4(terra::as.data.frame(r), vis_df)} for large rasters,
+#' where pulling every cell into an R data frame first can be slow and
+#' memory-heavy.
+#'
+#' @param r A \code{SpatRaster} whose layer names include every band
+#'   referenced in \code{vis_df$Equation}.
+#' @param vis_df A data frame with (at least) columns \code{Index} and
+#'   \code{Equation} -- see \code{\link{calc_vis_4}}.
+#'
+#' @return A \code{SpatRaster} with one layer per row of \code{vis_df},
+#'   named after \code{vis_df$Index}.
+#'
+#' @export
+calc_vis_rast <- function(r, vis_df) {
+
+  band_names <- terra::names(r)
+
+  exprs <-
+    vis_df$Equation |>
+    purrr::map(rlang::parse_expr) |>
+    stats::setNames(vis_df$Index)
+
+  result <- terra::app(r, fun = function(x) {
+
+    env <- stats::setNames(as.list(x), band_names)
+
+    out <- purrr::map_dbl(exprs, ~ eval(.x, envir = env))
+
+    out[is.infinite(out) | is.nan(out)] <- NA_real_
+
+    out
+
+  })
+
+  names(result) <- vis_df$Index
+
+  result
+
+}

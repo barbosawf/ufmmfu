@@ -1752,6 +1752,59 @@ save_tibble_formats <- function(obj, obj_label, base_dir, region, formats, suffi
 #' buffers need: erosion is allowed, but it can never make a plot vanish
 #' without telling you.
 #'
+#' \strong{Optional vegetation segmentation (removing corridor/soil pixels)}
+#'
+#' When plots are rasterized as whole rectangles/polygons, some pixels
+#' inevitably fall on bare soil or inter-row corridors rather than on the
+#' crop canopy itself, diluting every band/index summary with non-plant
+#' signal. Setting \code{segment_vegetation = TRUE} adds a masking step,
+#' per file, right after bands are matched/scaled and projected onto the
+#' plot grid:
+#' \enumerate{
+#'   \item \code{segmentation_formula} (an index formula referencing any
+#'   band available in that file, not just \code{bands}' declared symbols
+#'   -- see \code{\link{extract_formula_variables}}) is computed as a
+#'   raster via \code{\link{compute_segmentation_index}}.
+#'   \item For each plot, its own pixels of that index are used to
+#'   estimate a threshold with \code{threshold_method} (one of
+#'   \code{"otsu"}, \code{"triangle"} or \code{"kmeans"} -- see
+#'   \code{\link{compute_threshold}} and the individual method docs).
+#'   Thresholds are estimated \emph{per plot}, not once for the whole
+#'   raster, since soil brightness/moisture varies plot to plot.
+#'   \item Pixels at or below their plot's threshold (times
+#'   \code{threshold_scale}) are masked out of every band before the usual
+#'   pivot/summary step runs -- so every returned statistic (mean, median,
+#'   sd, max, min, and any vegetation index) reflects canopy pixels only.
+#' }
+#' The three threshold methods are mutually exclusive: exactly one is used
+#' per call, picked via \code{threshold_method}. If a file is missing a
+#' band \code{segmentation_formula} needs, segmentation is skipped for that
+#' file only (with a warning) -- the file is still processed normally,
+#' unmasked. This whole feature is opt-in and off by default.
+#'
+#' \strong{Memory: drone rasters can be huge}
+#'
+#' Drone GeoTIFFs typically have much smaller pixels (and therefore many
+#' more cells) than satellite scenes covering the same ground, which can
+#' push \code{terra} to spill data to disk-backed temporary files or run
+#' out of memory outright. Two independent, optional knobs help with this:
+#' \itemize{
+#'   \item \code{memfrac}/\code{raster_tempdir} configure \code{terra}
+#'   itself (via \code{terra::terraOptions()}) -- how much available RAM it
+#'   is allowed to use before spilling to disk, and where those temporary
+#'   files go. This is a \strong{global, session-wide} setting (exactly as
+#'   if you had called \code{terra::terraOptions()} yourself before this
+#'   function), not something undone when the function returns. Leave both
+#'   \code{NULL} (the default) to leave terra's current settings alone.
+#'   \item \code{parallel} processes regions concurrently with
+#'   \code{furrr::future_imap()} instead of \code{purrr::imap()} (regions
+#'   are independent units of work: their own files, their own
+#'   geometries). This function never calls \code{future::plan()} itself
+#'   -- set one up yourself beforehand (e.g. \code{future::plan(future::
+#'   multisession, workers = 4)}); with no plan set, \code{parallel = TRUE}
+#'   simply runs sequentially, same as \code{FALSE}.
+#' }
+#'
 #' @param base_dir Path to the base directory containing one subfolder per
 #'   region.
 #' @param shapefiles A named list of \code{sf} objects, one per region;
@@ -1780,6 +1833,22 @@ save_tibble_formats <- function(obj, obj_label, base_dir, region, formats, suffi
 #'   size instead of a fixed \code{buffer_dist} -- see Details.
 #' @param interpolate_bands Logical. If \code{TRUE}, small pockets of NA
 #'   cells are filled with a 3x3 focal mean.
+#' @param segment_vegetation Logical, default \code{FALSE}. If \code{TRUE},
+#'   masks out non-vegetation pixels (soil, corridors) per plot before
+#'   summarizing -- see Details.
+#' @param segmentation_formula Character, an index formula (like
+#'   \code{vis_df$Equation}) used only to build the vegetation mask when
+#'   \code{segment_vegetation = TRUE}; ignored otherwise. Defaults to NDVI,
+#'   \code{"(NIR - R) / (NIR + R)"}.
+#' @param threshold_method One of \code{"otsu"} (default), \code{"triangle"}
+#'   or \code{"kmeans"} -- the per-plot thresholding algorithm used to
+#'   separate vegetation from background when \code{segment_vegetation =
+#'   TRUE}. Mutually exclusive: exactly one method applies per call. See
+#'   \code{\link{compute_threshold}}.
+#' @param threshold_scale Numeric multiplier applied to each plot's
+#'   estimated threshold before masking (e.g. \code{1.2} to require pixels
+#'   somewhat above the raw threshold). Only used when
+#'   \code{segment_vegetation = TRUE}.
 #' @param filename_pattern Regular expression with two capture groups (date,
 #'   phase) used to parse each file's name via
 #'   \code{\link{extract_date_and_phase}}. Defaults to the drone convention
@@ -1801,11 +1870,26 @@ save_tibble_formats <- function(obj, obj_label, base_dir, region, formats, suffi
 #'   invalid/NA cells a plot may have before it is dropped for a given file
 #'   -- passed to \code{\link{find_non_covered_areas}}.
 #' @param per_layer Logical, passed to \code{\link{find_non_covered_areas}}.
+#' @param memfrac Optional numeric in \code{(0, 1]}. If supplied, sets
+#'   \code{terra}'s memory-fraction option (\code{terra::terraOptions()})
+#'   for the rest of the R session -- see Details.
+#' @param raster_tempdir Optional character path. If supplied, sets
+#'   \code{terra}'s temporary-file directory (\code{terra::terraOptions()})
+#'   for the rest of the R session, creating it if needed -- see Details.
+#' @param parallel Logical, default \code{FALSE}. If \code{TRUE}, regions
+#'   are processed with \code{furrr::future_imap()} instead of
+#'   \code{purrr::imap()} -- see Details.
 #' @param verbose Logical, whether to print progress/diagnostic messages.
 #'
 #' @return A named list, one entry per region in \code{shapefiles}, each a
 #'   \code{tibble} with per-plot, per-date, per-phase summary statistics for
 #'   every numeric band, auxiliary layer, and vegetation index.
+#'
+#' @seealso \code{\link{overlapping_raster_union}}, to run \emph{before}
+#'   this function when a region's plots are split across more than one
+#'   overlapping raster file (e.g. several drone flights, or adjacent
+#'   satellite tiles, that jointly -- but not individually -- cover every
+#'   plot).
 #'
 #' @examples
 #' \dontrun{
@@ -1825,7 +1909,9 @@ save_tibble_formats <- function(obj, obj_label, base_dir, region, formats, suffi
 #'       shapefiles = shapefiles,
 #'       vis_df = vis_df,
 #'       bands = c(R = "R", G = "G", B = "B", RE = "RE", NIR = "NIR"),
-#'       buffer_dist = -0.5 # erode 0.5 m inward, away from plot edges
+#'       buffer_dist = -0.5, # erode 0.5 m inward, away from plot edges
+#'       segment_vegetation = TRUE, # drop soil/corridor pixels per plot
+#'       threshold_method = "otsu"
 #'     )
 #'
 #'   result$FarmA
@@ -1851,21 +1937,59 @@ get_raster_data <- function(base_dir,
                              buffer_dist = NULL,
                              resolution_based_buffer = FALSE,
                              interpolate_bands = FALSE,
+                             segment_vegetation = FALSE,
+                             segmentation_formula = "(NIR - R) / (NIR + R)",
+                             threshold_method = c("otsu", "triangle", "kmeans"),
+                             threshold_scale = 1,
                              filename_pattern = "Date_(\\d{2}_\\d{2}_\\d{2})_([A-Za-z0-9]+)_",
                              export_geotiff = TRUE,
                              id_column = "id",
                              invalid_value = 0,
                              threshold = 0.1,
                              per_layer = TRUE,
+                             memfrac = NULL,
+                             raster_tempdir = NULL,
+                             parallel = FALSE,
                              verbose = TRUE) {
 
 
   band_match <- match.arg(band_match)
+  threshold_method <- match.arg(threshold_method)
 
 
   log_message <- function(..., level = "info") {
     if (verbose && (level == "info" || level == "warning"))
       message(...)
+  }
+
+
+  # Drone rasters in particular can have very small pixels (and therefore
+  # a huge cell count), which is what makes terra spill to disk-backed
+  # temporary files in the first place. memfrac/raster_tempdir configure
+  # *terra's own* memory/tempdir behavior (terra::terraOptions()) for the
+  # rest of the R session -- this is a global option, not scoped to this
+  # call, exactly like the caller setting it directly would be. Leave both
+  # NULL (the default) to leave terra's current settings untouched.
+  if (!is.null(memfrac) || !is.null(raster_tempdir)) {
+
+    if (!is.null(raster_tempdir)) fs::dir_create(raster_tempdir, recurse = TRUE)
+
+    current_terra_opts <- terra::terraOptions(print = FALSE)
+
+    terra::terraOptions(
+      memfrac = memfrac %||% current_terra_opts$memfrac,
+      tempdir = raster_tempdir %||% current_terra_opts$tempdir,
+      progress = 0
+    )
+
+    log_message(
+      "terra options set for this session: memfrac = ",
+      memfrac %||% "(unchanged)",
+      ", tempdir = ",
+      raster_tempdir %||% "(unchanged)",
+      "."
+    )
+
   }
 
 
@@ -1971,9 +2095,11 @@ get_raster_data <- function(base_dir,
 
 
 
-  # Process each region
-  results <- shapefiles |>
-    purrr::imap(\(shp, region_name) {
+  # Process each region. Kept as a standalone closure (region_fn) so the
+  # exact same per-region logic can run either sequentially (purrr::imap)
+  # or in parallel across regions (furrr::future_imap) -- see the
+  # `parallel` dispatch right after this closure is defined.
+  region_fn <- \(shp, region_name) {
 
 
       folder_path <- folders[grepl(region_name, basename(folders))]
@@ -2373,14 +2499,6 @@ get_raster_data <- function(base_dir,
             phase_str <- parsed_date_phase$phase %||% "All"
 
 
-            # Every layer (bands and auxiliary alike) is tagged with the
-            # same date/phase suffix so the pivot below can recover both,
-            # regardless of layer name -- "@@@" is used instead of "_" as
-            # the separator so layer names and phase labels may freely
-            # contain underscores without corrupting the split.
-            names(tif) <- paste(terra::names(tif), date_str, phase_str, sep = "@@@")
-
-
             tif <- tryCatch(
 
               terra::project(tif, template_rast, method = projection_method),
@@ -2401,6 +2519,81 @@ get_raster_data <- function(base_dir,
             # Crop and mask
             tif <- terra::crop(tif, region_sf_buffered) |>
               terra::mask(region_sf_buffered)
+
+
+            # Optional vegetation segmentation -- removes soil/corridor
+            # pixels per plot before any summary statistic is computed. See
+            # Details for the full rule; this only runs when requested and
+            # is skipped (with a warning), not fatal, if this particular
+            # file is missing a band segmentation_formula needs.
+            if (segment_vegetation) {
+
+              seg_bands_needed <- extract_formula_variables(segmentation_formula)
+              seg_bands_missing <- setdiff(seg_bands_needed, terra::names(tif))
+
+              if (length(seg_bands_missing) > 0) {
+
+                log_message(
+                  "Warning: cannot segment vegetation for ",
+                  basename(tif_file),
+                  " -- missing band(s) required by segmentation_formula: ",
+                  paste(seg_bands_missing, collapse = ", "),
+                  ". Skipping segmentation for this file.",
+                  level = "warning"
+                )
+
+              } else {
+
+                seg_vi <- compute_segmentation_index(tif, segmentation_formula)
+
+                # Per-plot pixel values of the segmentation index, matched
+                # back to plot IDs by extract()'s row-position ID (same
+                # convention as find_non_covered_areas).
+                seg_extracted <-
+                  terra::extract(seg_vi, terra::vect(region_sf_buffered), ID = TRUE)
+
+                plot_ids_vec <- region_sf_buffered[[id_column]]
+
+                per_plot_threshold <-
+                  seg_extracted |>
+                  dplyr::mutate("{id_column}" := plot_ids_vec[ID]) |>
+                  dplyr::group_by(dplyr::across(dplyr::all_of(id_column))) |>
+                  dplyr::summarise(
+                    threshold = compute_threshold(segmentation_index, method = threshold_method) *
+                      threshold_scale,
+                    .groups = "drop"
+                  )
+
+                # Turn the per-plot thresholds into a raster (each plot_id
+                # cell becomes its own threshold value), so the comparison
+                # against seg_vi is one vectorized raster operation instead
+                # of a manual per-plot crop/compare loop.
+                threshold_rast <-
+                  terra::classify(
+                    plot_ids_base,
+                    rcl = as.matrix(per_plot_threshold[, c(id_column, "threshold")]),
+                    others = NA
+                  )
+
+                veg_mask <- seg_vi > threshold_rast
+
+                # Fail open: a plot whose threshold couldn't be estimated
+                # (NA) keeps its pixels rather than losing them entirely.
+                veg_mask <- terra::ifel(is.na(veg_mask), TRUE, veg_mask)
+
+                tif <- terra::mask(tif, veg_mask, maskvalue = 0)
+
+                log_message(
+                  "Applied ",
+                  threshold_method,
+                  " vegetation segmentation for ",
+                  basename(tif_file),
+                  "."
+                )
+
+              }
+
+            }
 
 
             # Interpolate bands if requested
@@ -2430,6 +2623,14 @@ get_raster_data <- function(base_dir,
               tif <- terra::mask(tif, plot_ids_base)
 
             }
+
+
+            # Every layer (bands and auxiliary alike) is tagged with the
+            # same date/phase suffix so the pivot below can recover both,
+            # regardless of layer name -- "@@@" is used instead of "_" as
+            # the separator so layer names and phase labels may freely
+            # contain underscores without corrupting the split.
+            names(tif) <- paste(terra::names(tif), date_str, phase_str, sep = "@@@")
 
 
             # Combine with plot IDs
@@ -2539,7 +2740,40 @@ get_raster_data <- function(base_dir,
 
       dplyr::bind_rows(Data_list)
 
-    })
+  }
+
+
+  # Regions are independent units of work (their own files, their own
+  # geometries), which makes them the natural level to parallelize at --
+  # doing so *inside* a region too (e.g. the per-file loop) would risk
+  # oversubscribing cores for little extra gain. Parallel execution is
+  # opt-in: get_raster_data() never calls future::plan() itself (changing
+  # the global parallel backend from inside a library function is
+  # surprising/unsafe), so the caller must set one up beforehand -- with
+  # no plan set, future_imap() just runs sequentially, same as purrr::imap().
+  results <-
+    if (parallel) {
+
+      rlang::check_installed("furrr", reason = "to use get_raster_data(parallel = TRUE)")
+
+      log_message(
+        "parallel = TRUE: processing regions with furrr::future_imap(). ",
+        "Call future::plan() (e.g. future::plan(future::multisession)) before ",
+        "this function if you want them to actually run in parallel."
+      )
+
+      # seed = TRUE gives every region its own parallel-safe RNG stream --
+      # needed for reproducibility since threshold_method = "kmeans" (see
+      # kmeans_threshold()) relies on stats::kmeans()'s random starts.
+      shapefiles |>
+        furrr::future_imap(region_fn, .options = furrr::furrr_options(seed = TRUE))
+
+    } else {
+
+      shapefiles |>
+        purrr::imap(region_fn)
+
+    }
 
   return(results)
 

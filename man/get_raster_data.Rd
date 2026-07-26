@@ -19,12 +19,19 @@ get_raster_data(
   buffer_dist = NULL,
   resolution_based_buffer = FALSE,
   interpolate_bands = FALSE,
+  segment_vegetation = FALSE,
+  segmentation_formula = "(NIR - R) / (NIR + R)",
+  threshold_method = c("otsu", "triangle", "kmeans"),
+  threshold_scale = 1,
   filename_pattern = "Date_(\\\\d{2}_\\\\d{2}_\\\\d{2})_([A-Za-z0-9]+)_",
   export_geotiff = TRUE,
   id_column = "id",
   invalid_value = 0,
   threshold = 0.1,
   per_layer = TRUE,
+  memfrac = NULL,
+  raster_tempdir = NULL,
+  parallel = FALSE,
   verbose = TRUE
 )
 }
@@ -69,6 +76,26 @@ size instead of a fixed \code{buffer_dist} -- see Details.}
 \item{interpolate_bands}{Logical. If \code{TRUE}, small pockets of NA
 cells are filled with a 3x3 focal mean.}
 
+\item{segment_vegetation}{Logical, default \code{FALSE}. If \code{TRUE},
+masks out non-vegetation pixels (soil, corridors) per plot before
+summarizing -- see Details.}
+
+\item{segmentation_formula}{Character, an index formula (like
+\code{vis_df$Equation}) used only to build the vegetation mask when
+\code{segment_vegetation = TRUE}; ignored otherwise. Defaults to NDVI,
+\code{"(NIR - R) / (NIR + R)"}.}
+
+\item{threshold_method}{One of \code{"otsu"} (default), \code{"triangle"}
+or \code{"kmeans"} -- the per-plot thresholding algorithm used to
+separate vegetation from background when \code{segment_vegetation =
+TRUE}. Mutually exclusive: exactly one method applies per call. See
+\code{\link{compute_threshold}}.}
+
+\item{threshold_scale}{Numeric multiplier applied to each plot's
+estimated threshold before masking (e.g. \code{1.2} to require pixels
+somewhat above the raw threshold). Only used when
+\code{segment_vegetation = TRUE}.}
+
 \item{filename_pattern}{Regular expression with two capture groups (date,
 phase) used to parse each file's name via
 \code{\link{extract_date_and_phase}}. Defaults to the drone convention
@@ -95,6 +122,18 @@ invalid/NA cells a plot may have before it is dropped for a given file
 -- passed to \code{\link{find_non_covered_areas}}.}
 
 \item{per_layer}{Logical, passed to \code{\link{find_non_covered_areas}}.}
+
+\item{memfrac}{Optional numeric in \code{(0, 1]}. If supplied, sets
+\code{terra}'s memory-fraction option (\code{terra::terraOptions()})
+for the rest of the R session -- see Details.}
+
+\item{raster_tempdir}{Optional character path. If supplied, sets
+\code{terra}'s temporary-file directory (\code{terra::terraOptions()})
+for the rest of the R session, creating it if needed -- see Details.}
+
+\item{parallel}{Logical, default \code{FALSE}. If \code{TRUE}, regions
+are processed with \code{furrr::future_imap()} instead of
+\code{purrr::imap()} -- see Details.}
 
 \item{verbose}{Logical, whether to print progress/diagnostic messages.}
 }
@@ -188,6 +227,59 @@ warning naming its \code{id_column} value) rather than silently breaking
 rasterization/cropping downstream -- this is the "clear rule" negative
 buffers need: erosion is allowed, but it can never make a plot vanish
 without telling you.
+
+\strong{Optional vegetation segmentation (removing corridor/soil pixels)}
+
+When plots are rasterized as whole rectangles/polygons, some pixels
+inevitably fall on bare soil or inter-row corridors rather than on the
+crop canopy itself, diluting every band/index summary with non-plant
+signal. Setting \code{segment_vegetation = TRUE} adds a masking step,
+per file, right after bands are matched/scaled and projected onto the
+plot grid:
+\enumerate{
+\item \code{segmentation_formula} (an index formula referencing any
+band available in that file, not just \code{bands}' declared symbols
+-- see \code{\link{extract_formula_variables}}) is computed as a
+raster via \code{\link{compute_segmentation_index}}.
+\item For each plot, its own pixels of that index are used to
+estimate a threshold with \code{threshold_method} (one of
+\code{"otsu"}, \code{"triangle"} or \code{"kmeans"} -- see
+\code{\link{compute_threshold}} and the individual method docs).
+Thresholds are estimated \emph{per plot}, not once for the whole
+raster, since soil brightness/moisture varies plot to plot.
+\item Pixels at or below their plot's threshold (times
+\code{threshold_scale}) are masked out of every band before the usual
+pivot/summary step runs -- so every returned statistic (mean, median,
+sd, max, min, and any vegetation index) reflects canopy pixels only.
+}
+The three threshold methods are mutually exclusive: exactly one is used
+per call, picked via \code{threshold_method}. If a file is missing a
+band \code{segmentation_formula} needs, segmentation is skipped for that
+file only (with a warning) -- the file is still processed normally,
+unmasked. This whole feature is opt-in and off by default.
+
+\strong{Memory: drone rasters can be huge}
+
+Drone GeoTIFFs typically have much smaller pixels (and therefore many
+more cells) than satellite scenes covering the same ground, which can
+push \code{terra} to spill data to disk-backed temporary files or run
+out of memory outright. Two independent, optional knobs help with this:
+\itemize{
+\item \code{memfrac}/\code{raster_tempdir} configure \code{terra}
+itself (via \code{terra::terraOptions()}) -- how much available RAM it
+is allowed to use before spilling to disk, and where those temporary
+files go. This is a \strong{global, session-wide} setting (exactly as
+if you had called \code{terra::terraOptions()} yourself before this
+function), not something undone when the function returns. Leave both
+\code{NULL} (the default) to leave terra's current settings alone.
+\item \code{parallel} processes regions concurrently with
+\code{furrr::future_imap()} instead of \code{purrr::imap()} (regions
+are independent units of work: their own files, their own
+geometries). This function never calls \code{future::plan()} itself
+-- set one up yourself beforehand (e.g. \code{future::plan(future::
+  multisession, workers = 4)}); with no plan set, \code{parallel = TRUE}
+simply runs sequentially, same as \code{FALSE}.
+}
 }
 \examples{
 \dontrun{
@@ -207,10 +299,19 @@ without telling you.
       shapefiles = shapefiles,
       vis_df = vis_df,
       bands = c(R = "R", G = "G", B = "B", RE = "RE", NIR = "NIR"),
-      buffer_dist = -0.5 # erode 0.5 m inward, away from plot edges
+      buffer_dist = -0.5, # erode 0.5 m inward, away from plot edges
+      segment_vegetation = TRUE, # drop soil/corridor pixels per plot
+      threshold_method = "otsu"
     )
 
   result$FarmA
 }
 
+}
+\seealso{
+\code{\link{overlapping_raster_union}}, to run \emph{before}
+this function when a region's plots are split across more than one
+overlapping raster file (e.g. several drone flights, or adjacent
+satellite tiles, that jointly -- but not individually -- cover every
+plot).
 }
