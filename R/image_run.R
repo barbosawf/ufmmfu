@@ -2251,7 +2251,7 @@ get_raster_data <- function(base_dir,
 
                 idx <- match(matched_bands, raster_names)
                 raster_names[idx] <- names(matched_bands)
-                terra::names(tif) <- raster_names
+                names(tif) <- raster_names
 
               }
 
@@ -2295,7 +2295,7 @@ get_raster_data <- function(base_dir,
 
               }
 
-              terra::names(tif) <- raster_names
+              names(tif) <- raster_names
 
             }
 
@@ -2378,7 +2378,7 @@ get_raster_data <- function(base_dir,
             # regardless of layer name -- "@@@" is used instead of "_" as
             # the separator so layer names and phase labels may freely
             # contain underscores without corrupting the split.
-            terra::names(tif) <- paste(terra::names(tif), date_str, phase_str, sep = "@@@")
+            names(tif) <- paste(terra::names(tif), date_str, phase_str, sep = "@@@")
 
 
             tif <- tryCatch(
@@ -2436,7 +2436,7 @@ get_raster_data <- function(base_dir,
             plot_ids <- plot_ids_base
 
 
-            terra::names(plot_ids) <- paste("plot_id", date_str, phase_str, sep = "@@@")
+            names(plot_ids) <- paste("plot_id", date_str, phase_str, sep = "@@@")
 
 
             rast_with_ids <- c(tif, plot_ids)
