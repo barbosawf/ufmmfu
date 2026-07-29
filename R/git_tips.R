@@ -33,6 +33,16 @@ git_tips <- function(open = TRUE) {
       )
     ),
     list(
+      title = "Creating a brand new project (multi-account)",
+      note  = "Avoid usethis::use_github() here: it defaults to HTTPS and ignores your SSH alias, so with two+ accounts it's easy to create the repo under the wrong one without noticing.",
+      steps = c(
+        "usethis::create_project(\"path/to/NewProject\", open = FALSE)  # or File > New Project, no use_github()",
+        "usethis::use_git_config(scope = \"project\", user.name = \"<account>\", user.email = \"<account>@example.com\")",
+        "# ... make the first commit ...",
+        "git_new_project(\"work\", \"NewProject\")  # checks gh + ssh identity match, creates repo, sets remote, pushes"
+      )
+    ),
+    list(
       title = "Cloning a repository",
       note  = "Works from a short slug, an HTTPS URL, or an SSH URL -- HTTPS input is converted to SSH automatically.",
       steps = c(
@@ -103,6 +113,7 @@ git_tips <- function(open = TRUE) {
       c("git_setup_ssh_config(accounts)", "Writes a multi-account SSH config (Host aliases) into the physical .ssh directory and binds core.sshCommand."),
       c("check_ssh_setup()", "Full diagnostic: compares R's '~' to the physical home, verifies core.sshCommand, lists keys found."),
       c("git_list_ssh_hosts()", "Lists the Host aliases currently defined in ~/.ssh/config."),
+      c("git_test_ssh_alias(alias, host)", "Runs 'ssh -T' against a Host alias and parses GitHub's greeting to confirm which account it actually authenticates as."),
       c("git_ssh_env() / git_system2()", "Low-level building blocks: per-call GIT_SSH_COMMAND override used internally by every network-facing helper below.")
     ),
     "Remote protocol (HTTPS vs SSH)" = list(
@@ -110,6 +121,9 @@ git_tips <- function(open = TRUE) {
       c("git_status_check(remote)", "Prints a remote's URLs and warns if HTTPS is in use anywhere."),
       c("git_convert_to_ssh(remote, ssh_alias)", "Rewrites an HTTPS remote (fetch and/or push URL) to SSH automatically. Called by default from the functions below (auto_ssh = TRUE)."),
       c("git_set_ssh_account(account_name, project_name, owner)", "Points the local repo's remote at a specific ~/.ssh/config Host alias.")
+    ),
+    "Creating a new project" = list(
+      c("git_new_project(account_alias, repo_name, owner, private, push, branch)", "Guard-railed: verifies gh's authenticated identity AND the SSH alias both match 'owner' before creating the repo, setting origin, and pushing.")
     ),
     "Cloning" = list(
       c("git_clone(repo, ssh_alias, ...)", "Clones a repo via SSH from a short slug, HTTPS URL, or SSH URL, converting HTTPS input automatically."),

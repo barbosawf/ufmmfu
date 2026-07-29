@@ -1607,6 +1607,279 @@ git_build_ssh_url <- function(repo, host = "github.com", ssh_alias = NULL) {
   sprintf("git@%s:%s.git", effective_host, slug)
 }
 
+#' Test an SSH Host Alias Against GitHub
+#'
+#' @description
+#' Runs \code{ssh -T git@<host_alias>} and parses the response GitHub sends
+#' back, rather than relying on the process exit status: GitHub's SSH
+#' endpoint always closes the connection with exit status \code{1} after a
+#' successful authentication (it does not grant a shell), so a plain
+#' success/failure check on the exit code cannot distinguish "authenticated
+#' as the wrong account" from "authenticated correctly." This function
+#' instead extracts the account name from the \code{"Hi <login>! You've
+#' successfully authenticated..."} greeting itself.
+#'
+#' @param alias Character. Either a short alias (e.g. \code{"work"}) or a
+#'   full \code{Host} entry from \verb{~/.ssh/config} (e.g.
+#'   \code{"github.com-work"}, see \code{\link{git_setup_ssh_config}}). A
+#'   short alias is automatically expanded to \code{"<host>-<alias>"}.
+#' @param host Character. Git hosting domain. Default \code{"github.com"}.
+#' @return Invisibly returns a list with \code{alias} (the full host alias
+#'   tested), \code{ok} (\code{TRUE} if GitHub confirmed successful
+#'   authentication), \code{login} (the account name GitHub greeted, or
+#'   \code{NA} if it couldn't be parsed), and \code{raw_output} (the full
+#'   text returned by \code{ssh}).
+#' @seealso \code{\link{git_setup_ssh_config}}, \code{\link{git_new_project}}
+#' @export
+#'
+#' @examples
+#' \dontrun{
+#' git_test_ssh_alias("work")
+#' git_test_ssh_alias("github.com-personal")
+#' }
+git_test_ssh_alias <- function(alias, host = "github.com") {
+  host_alias <- if (identical(alias, host) || startsWith(alias, paste0(host, "-"))) {
+    alias
+  } else {
+    sprintf("%s-%s", host, alias)
+  }
+
+  raw_output <- suppressWarnings(tryCatch(
+    system2("ssh", c("-T", sprintf("git@%s", host_alias)), stdout = TRUE, stderr = TRUE),
+    error = function(e) character(0)
+  ))
+  raw_output <- raw_output[nzchar(raw_output)]
+  text <- paste(raw_output, collapse = " ")
+
+  login_match <- regmatches(text, regexpr("(?<=Hi )[^!]+", text, perl = TRUE))
+  login <- if (length(login_match) > 0 && nzchar(login_match)) login_match else NA_character_
+  ok    <- grepl("successfully authenticated", text, fixed = TRUE)
+
+  if (ok) {
+    message(sprintf("[OK] SSH alias '%s' authenticated as '%s'.", host_alias, login))
+  } else {
+    message(sprintf(
+      "[FAILED] SSH alias '%s' did not authenticate successfully. Raw response: %s",
+      host_alias, if (nzchar(text)) text else "(no output)"
+    ))
+  }
+
+  invisible(list(alias = host_alias, ok = ok, login = login, raw_output = raw_output))
+}
+
+#' Create a New GitHub Repository Under the Right Account (Guard-Railed)
+#'
+#' @description
+#' Wraps the error-prone part of publishing a brand-new local project to
+#' GitHub when more than one account is in play: creating the remote
+#' repository under the wrong account is easy to do by accident, because
+#' \code{gh} and \code{git}/\code{ssh} each resolve "which account am I" in
+#' their own, independent way, and neither one warns you if the two
+#' disagree. This function checks both explicitly, before creating
+#' anything, and refuses to continue on a mismatch:
+#' \enumerate{
+#'   \item Confirms an SSH \code{Host github.com-<account_alias>} alias
+#'     exists (see \code{\link{git_setup_ssh_config}}).
+#'   \item Confirms the \code{gh} CLI's currently authenticated identity
+#'     (\code{gh::gh_whoami()}) matches \code{owner} -- otherwise the new
+#'     repository would be created under whichever account \code{gh}
+#'     happens to be logged in as, silently.
+#'   \item Creates the repository via \code{gh::gh("POST /user/repos")}.
+#'   \item Re-tests the SSH alias itself with \code{\link{git_test_ssh_alias}}
+#'     and confirms \emph{that} also resolves to \code{owner} -- a second,
+#'     independent check, since \code{gh} and \code{ssh} can be configured
+#'     for different accounts on the same machine.
+#'   \item Points the local \code{origin} remote at the new repository over
+#'     SSH, via \code{\link{git_build_ssh_url}}.
+#'   \item Pushes the current branch, via \code{\link{git_system2}} (never
+#'     through the \code{gert}/libgit2 path, which does not read
+#'     \verb{~/.ssh/config}).
+#' }
+#'
+#' This function does \strong{not} create the local project directory, run
+#' \code{git init}, or set the project-level \code{user.name}/\code{user.email}
+#' -- do that first (see \code{\link{git_tips}} for the full sequence), so
+#' that at least one commit exists for the initial push.
+#'
+#' @param account_alias Character. The SSH routing alias to use, matching a
+#'   \code{Host github.com-<account_alias>} entry in \verb{~/.ssh/config}
+#'   (see \code{\link{git_setup_ssh_config}}), e.g. \code{"work"} or
+#'   \code{"personal"}.
+#' @param repo_name Character. Name of the new repository to create.
+#' @param owner Character or \code{NULL}. The GitHub account or organization
+#'   that should own the new repository, and the identity both \code{gh}
+#'   and the SSH alias are checked against. If \code{NULL} (default),
+#'   defaults to \code{account_alias} (matching \code{\link{git_set_ssh_account}}).
+#' @param private Logical. Whether the new repository should be private.
+#'   Default \code{TRUE}.
+#' @param push Logical. If \code{TRUE} (default), pushes the current branch
+#'   to the new remote after creating it. Set to \code{FALSE} to only create
+#'   the repository and configure \code{origin}, e.g. if the local project
+#'   has no commits yet.
+#' @param branch Character or \code{NULL}. Branch to push. If \code{NULL}
+#'   (default), the current active branch is detected automatically. Only
+#'   used when \code{push = TRUE}.
+#' @return Invisibly returns a list with \code{owner}, \code{repo_name},
+#'   \code{ssh_url}, and \code{html_url}. Stops with an informative error at
+#'   the first mismatch or failure, before any destructive or remote-facing
+#'   step is taken.
+#' @seealso \code{\link{git_setup_ssh_config}}, \code{\link{git_test_ssh_alias}},
+#'   \code{\link{git_build_ssh_url}}, \code{\link{git_system2}}
+#' @export
+#'
+#' @examples
+#' \dontrun{
+#' # Create a private repo under the "work" account/alias and push to it
+#' git_new_project("work", "my-new-project")
+#'
+#' # Public repo, explicit owner (organization) different from the alias
+#' git_new_project("work", "my-new-project", owner = "my-org", private = FALSE)
+#' }
+git_new_project <- function(account_alias,
+                            repo_name,
+                            owner = NULL,
+                            private = TRUE,
+                            push = TRUE,
+                            branch = NULL) {
+  if (!requireNamespace("gh", quietly = TRUE)) {
+    stop(
+      "The 'gh' package is required for git_new_project() (it wraps the ",
+      "GitHub CLI's authenticated identity and the repository-creation ",
+      "API). Install it with install.packages(\"gh\").",
+      call. = FALSE
+    )
+  }
+
+  if (is.null(owner)) {
+    owner <- account_alias
+  }
+
+  host_alias <- sprintf("github.com-%s", account_alias)
+  configured_hosts <- git_list_ssh_hosts()
+  if (length(configured_hosts) > 0 && !(host_alias %in% configured_hosts)) {
+    stop(sprintf(
+      paste(
+        "SSH host alias '%s' was not found in ~/.ssh/config. Set it up",
+        "first with git_setup_ssh_config(), passing the FULL vector of",
+        "existing accounts plus the new one (it rewrites the whole file)."
+      ),
+      host_alias
+    ), call. = FALSE)
+  }
+
+  message(sprintf("- Checking the 'gh' CLI's authenticated identity against '%s'...", owner))
+  whoami <- tryCatch(
+    gh::gh_whoami(),
+    error = function(e) {
+      stop(sprintf(
+        "Could not determine the authenticated 'gh' identity (%s). Run 'gh auth login' or 'gh auth switch' for the '%s' account first.",
+        conditionMessage(e), owner
+      ), call. = FALSE)
+    }
+  )
+  current_login <- whoami$login
+
+  if (!identical(current_login, owner)) {
+    stop(sprintf(
+      paste(
+        "The 'gh' CLI is currently authenticated as '%s', but this project",
+        "is meant to be created under '%s' (account_alias = '%s'). Creating",
+        "it now would create the repository under the WRONG account.",
+        "Run 'gh auth switch --user %s' (or 'gh auth login') to switch",
+        "identities, then call git_new_project() again.",
+        sep = "\n"
+      ),
+      current_login, owner, account_alias, owner
+    ), call. = FALSE)
+  }
+  message(sprintf("[OK] 'gh' is authenticated as '%s'.", current_login))
+
+  message(sprintf(
+    "- Creating repository '%s/%s' on GitHub (private = %s)...",
+    owner, repo_name, private
+  ))
+  repo_info <- tryCatch(
+    gh::gh("POST /user/repos", name = repo_name, private = private),
+    error = function(e) {
+      stop(sprintf(
+        "Failed to create repository '%s/%s': %s",
+        owner, repo_name, conditionMessage(e)
+      ), call. = FALSE)
+    }
+  )
+  html_url <- repo_info$html_url %||% sprintf("https://github.com/%s/%s", owner, repo_name)
+  message(sprintf("[SUCCESS] Repository created: %s", html_url))
+
+  ssh_test <- git_test_ssh_alias(host_alias)
+  if (!isTRUE(ssh_test$ok) || !identical(ssh_test$login, owner)) {
+    stop(sprintf(
+      paste(
+        "SSH alias '%s' did not authenticate as expected (got login '%s',",
+        "expected '%s'). The repository was already created on GitHub, but",
+        "fix ~/.ssh/config (see git_setup_ssh_config()) before letting this",
+        "function set the remote or push -- proceeding now risks pushing",
+        "this project through the wrong account's identity.",
+        sep = "\n"
+      ),
+      host_alias, ssh_test$login %||% "unknown", owner
+    ), call. = FALSE)
+  }
+
+  ssh_url <- git_build_ssh_url(sprintf("%s/%s", owner, repo_name), ssh_alias = host_alias)
+
+  existing_remote <- suppressWarnings(tryCatch(
+    system2("git", c("remote", "get-url", "origin"), stdout = TRUE, stderr = FALSE),
+    error = function(e) character(0)
+  ))
+  existing_remote <- existing_remote[nzchar(existing_remote)]
+
+  remote_args <- if (length(existing_remote) > 0) {
+    c("remote", "set-url", "origin", ssh_url)
+  } else {
+    c("remote", "add", "origin", ssh_url)
+  }
+  remote_result <- system2("git", remote_args)
+  if (remote_result != 0) {
+    stop("Failed to configure the 'origin' remote. Is this directory a Git repository?", call. = FALSE)
+  }
+  message(sprintf("[SUCCESS] Remote 'origin' set to: %s", ssh_url))
+
+  if (!isTRUE(push)) {
+    message("- push = FALSE: skipping the initial push. Run git_push_with_local_id() when ready.")
+    return(invisible(list(owner = owner, repo_name = repo_name, ssh_url = ssh_url, html_url = html_url)))
+  }
+
+  if (is.null(branch)) {
+    branch <- tryCatch(
+      system2("git", c("rev-parse", "--abbrev-ref", "HEAD"), stdout = TRUE, stderr = FALSE),
+      error = function(e) character(0)
+    )
+    branch <- branch[nzchar(branch)]
+    if (length(branch) == 0) {
+      stop(
+        "Could not detect the current branch. Make sure this directory is ",
+        "already a Git repository with at least one commit before pushing ",
+        "(or pass push = FALSE and push manually once ready).",
+        call. = FALSE
+      )
+    }
+    branch <- branch[1]
+  }
+
+  message(sprintf("- Pushing '%s' to 'origin/%s' via this machine's own SSH config...", branch, branch))
+  push_result <- git_system2(c("push", "-u", "origin", branch))
+  if (push_result != 0) {
+    stop(
+      "git push failed. The remote and SSH alias were configured correctly, ",
+      "but the push itself did not succeed -- check git's own error output above.",
+      call. = FALSE
+    )
+  }
+  message("[SUCCESS] Initial push complete.")
+
+  invisible(list(owner = owner, repo_name = repo_name, ssh_url = ssh_url, html_url = html_url))
+}
+
 # Small internal null-coalescing helper (kept local so this file has no
 # hard dependency on rlang, matching the rest of the package's helpers).
 `%||%` <- function(x, y) {if (is.null(x)) {y} else {x}}
