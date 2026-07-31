@@ -623,9 +623,17 @@ git_remote_urls <- function(remote = "origin") {
 #' @param ssh_alias Character or \code{NULL}. An SSH \code{Host} alias
 #'   configured in \code{~/.ssh/config} (e.g. \code{"github.com-work"}, see
 #'   \code{\link{git_setup_ssh_config}}) to route through instead of the
-#'   remote's real host. When \code{NULL} (default), the real host extracted
-#'   from the existing HTTPS URL is kept, which is correct for single-account
-#'   setups using the default SSH identity.
+#'   remote's real host. When \code{NULL} (default), the function checks
+#'   \code{\link{git_list_ssh_hosts}} for multi-account aliases on that host:
+#'   if exactly one alias matches the repository owner (e.g. owner
+#'   \code{"work-org"} and alias \code{"github.com-work-org"}), it is
+#'   selected automatically; if aliases exist for the host but none matches
+#'   the owner, the function stops with guidance instead of silently building
+#'   a remote that is very likely to fail authentication (the generic
+#'   \code{Host *} block written by \code{\link{git_setup_ssh_config}} carries
+#'   no \code{IdentityFile} of its own). When no aliases are configured for
+#'   the host at all, the real host is kept as before, which is correct for
+#'   single-account setups using the default SSH identity.
 #' @param quiet Logical. If \code{TRUE}, suppresses the informational
 #'   message printed when the remote is already SSH on both URLs (messages
 #'   describing an actual conversion are always printed). Default
@@ -651,7 +659,11 @@ git_convert_to_ssh <- function(remote = "origin", ssh_alias = NULL, quiet = FALS
     return(invisible(urls))
   }
 
-  extract_host <- function(url) sub("^https?://([^/]+)/.*$", "\\1", url)
+  extract_host  <- function(url) sub("^https?://([^/]+)/.*$", "\\1", url)
+  extract_owner <- function(url) sub("^https?://[^/]+/([^/]+)/.*$", "\\1", url)
+
+  reference_url <- if (urls$fetch_is_https) urls$fetch_url else urls$push_url
+  host <- extract_host(reference_url)
 
   message(sprintf("- Remote '%s' is using HTTPS (fetch: %s).", remote, urls$fetch_url))
   message(
@@ -659,6 +671,37 @@ git_convert_to_ssh <- function(remote = "origin", ssh_alias = NULL, quiet = FALS
     "via SSH keys (see git_ssh_env()), so an HTTPS remote will keep failing once ",
     "any cached HTTPS credential/token stops working."
   )
+
+  if (is.null(ssh_alias)) {
+    owner <- extract_owner(reference_url)
+    configured_hosts <- git_list_ssh_hosts()
+    host_aliases <- configured_hosts[startsWith(configured_hosts, sprintf("%s-", host))]
+
+    if (length(host_aliases) > 0) {
+      owner_alias <- sprintf("%s-%s", host, owner)
+      if (owner_alias %in% host_aliases) {
+        ssh_alias <- owner_alias
+        message(sprintf(
+          "- Detected %d multi-account SSH alias(es) for '%s'. Auto-selected '%s' to match repository owner '%s'.",
+          length(host_aliases), host, ssh_alias, owner
+        ))
+      } else {
+        stop(sprintf(
+          paste(
+            "Remote '%s' points at '%s', and this machine has multi-account SSH",
+            "alias(es) configured for that host (%s), but none matches the",
+            "repository owner '%s'. Converting to the bare host is very likely to",
+            "fail: the generic 'Host *' block written by git_setup_ssh_config()",
+            "carries no IdentityFile of its own -- only the per-alias blocks do.",
+            "Pass ssh_alias explicitly (e.g. ssh_alias = \"%s\"), or use",
+            "git_set_ssh_account() instead.",
+            sep = "\n"
+          ),
+          remote, host, paste(host_aliases, collapse = ", "), owner, host_aliases[1]
+        ), call. = FALSE)
+      }
+    }
+  }
 
   if (urls$fetch_is_https) {
     new_fetch <- git_build_ssh_url(urls$fetch_url, host = extract_host(urls$fetch_url), ssh_alias = ssh_alias)
@@ -683,6 +726,21 @@ git_convert_to_ssh <- function(remote = "origin", ssh_alias = NULL, quiet = FALS
       ), sprintf("a common, easy-to-miss cause of pushes silently using the wrong URL. Aligned it to: %s", new_push))
     } else {
       message(sprintf("- Push URL set to: %s", new_push))
+    }
+  }
+
+  if (!is.null(ssh_alias)) {
+    ssh_test <- git_test_ssh_alias(ssh_alias, host = host)
+    if (!isTRUE(ssh_test$ok)) {
+      warning(sprintf(
+        paste(
+          "Remote '%s' was converted to SSH via alias '%s', but that alias did",
+          "NOT authenticate successfully just now. The remote URL has already",
+          "been updated, so pushes/pulls will keep failing until this is fixed.",
+          "Run check_ssh_setup() to diagnose."
+        ),
+        remote, ssh_alias
+      ), call. = FALSE)
     }
   }
 

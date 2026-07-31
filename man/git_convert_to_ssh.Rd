@@ -12,9 +12,17 @@ git_convert_to_ssh(remote = "origin", ssh_alias = NULL, quiet = FALSE)
 \item{ssh_alias}{Character or \code{NULL}. An SSH \code{Host} alias
 configured in \code{~/.ssh/config} (e.g. \code{"github.com-work"}, see
 \code{\link{git_setup_ssh_config}}) to route through instead of the
-remote's real host. When \code{NULL} (default), the real host extracted
-from the existing HTTPS URL is kept, which is correct for single-account
-setups using the default SSH identity.}
+remote's real host. When \code{NULL} (default), the function checks
+\code{\link{git_list_ssh_hosts}} for multi-account aliases on that host:
+if exactly one alias matches the repository owner (e.g. owner
+\code{"work-org"} and alias \code{"github.com-work-org"}), it is
+selected automatically; if aliases exist for the host but none matches
+the owner, the function stops with guidance instead of silently building
+a remote that is very likely to fail authentication (the generic
+\code{Host *} block written by \code{\link{git_setup_ssh_config}} carries
+no \code{IdentityFile} of its own). When no aliases are configured for
+the host at all, the real host is kept as before, which is correct for
+single-account setups using the default SSH identity.}
 
 \item{quiet}{Logical. If \code{TRUE}, suppresses the informational
 message printed when the remote is already SSH on both URLs (messages
