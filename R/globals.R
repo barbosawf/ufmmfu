@@ -1,9 +1,4 @@
-utils::globalVariables(
-  c(
-    "Frequency", "n", "Correlation",
-    "ID", "na_or_invalid", "n_values", "prop_invalid",
-    "Date", "plot_id",
-    "segmentation_index", "threshold",
-    "group_id"
-  )
-)
+# Suppress R CMD check NOTEs of the form "no visible binding for global
+# variable 'X'": these are data frame column names referenced via dplyr's
+# non-standard evaluation.
+utils::globalVariables(c("Frequency", "n", "Correlation"))
